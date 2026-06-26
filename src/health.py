@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 
 HEALTH_HOST = "127.0.0.1"
-HEALTH_PORT = 9099
+HEALTH_PORT = int(os.environ.get("AGY_BRIDGE_HEALTH_PORT") or "9099")
 _started = time.time()
 _turns_total = 0
 _errors_total = 0

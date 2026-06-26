@@ -1,11 +1,14 @@
 [Unit]
 Description=Antigravity Telegram Bridge
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=__HOME__/.gemini/extensions/antigravity-telegram-bridge
 ExecStart=__VENV_PYTHON__ -m src.daemon
 Environment=PYTHONUNBUFFERED=1
+Environment=AGY_BRIDGE_HEALTH_PORT=9100
 Environment=PATH=__HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Restart=on-failure
 RestartSec=5s
