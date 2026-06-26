@@ -1,0 +1,29 @@
+{
+  "name": "telegram-bridge",
+  "version": "0.1.0",
+  "description": "Bridge Telegram chats to Antigravity CLI (agy) sessions (long-running daemon controlled via this tool).",
+  "config_file": "config.json",
+  "tools": [
+    {
+      "name": "bridge",
+      "description": "Control the Antigravity telegram bridge daemon (start/stop/status/logs/setup).",
+      "command": [".venv/bin/python", "-m", "src.control"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["start", "stop", "status", "logs", "setup"],
+            "description": "What to do with the daemon."
+          },
+          "lines": {
+            "type": "integer",
+            "default": 50,
+            "description": "Number of log lines to tail (only used for action=logs)."
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ]
+}

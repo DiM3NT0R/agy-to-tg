@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv
+.venv/
+venv/
+
+# User config (contains secrets — never commit)
+config.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local logs (in case the daemon ever falls back to writing here)
+logs/
+*.log
+# roborev snapshots
+/.roborev/

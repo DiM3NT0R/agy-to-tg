@@ -1,0 +1,33 @@
+[Unit]
+Description=Antigravity Telegram Bridge
+
+[Service]
+Type=simple
+WorkingDirectory=__HOME__/.gemini/extensions/antigravity-telegram-bridge
+ExecStart=__VENV_PYTHON__ -m src.daemon
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=__HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=on-failure
+RestartSec=5s
+
+# --- Hardening (mirrors kimi-telegram-bridge) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+StandardOutput=append:__HOME__/.antigravity/bridge/logs/bridge.log
+StandardError=append:__HOME__/.antigravity/bridge/logs/bridge.log
+
+[Install]
+WantedBy=default.target

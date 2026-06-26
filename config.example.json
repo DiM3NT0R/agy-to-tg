@@ -1,0 +1,13 @@
+{
+  "telegram": {
+    "bot_token": "REPLACE_WITH_BOT_TOKEN_FROM_BOTFATHER",
+    "allowed_user_ids": [123456789],
+    "allowed_chat_ids": []
+  },
+  "agy": {
+    "chats_root": "",
+    "default_workdir": "",
+    "model": "",
+    "mode": "code"
+  }
+}
