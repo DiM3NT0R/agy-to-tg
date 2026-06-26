@@ -53,7 +53,7 @@ flowchart LR
     Bridge[bridge daemon<br/>Python / systemd --user]
     Agy[agy CLI subprocess<br/>per turn]
     State[(state.json<br/>chat → project dir)]
-    Health[health + metrics<br/>:9099]
+    Health[health + metrics<br/>:9100]
 
     User -->|message| TG
     TG -->|long-poll / webhook| Bridge
@@ -164,11 +164,11 @@ journalctl --user -u antigravity-telegram-bridge.service -n 100 --no-pager
 # Logs (file)
 tail -f ~/.antigravity/bridge/logs/bridge.log
 
-# Health
-curl http://127.0.0.1:9099/health
+# Health (port configurable via AGY_BRIDGE_HEALTH_PORT; default 9100)
+curl http://127.0.0.1:9100/health
 
 # Metrics
-curl http://127.0.0.1:9099/metrics
+curl http://127.0.0.1:9100/metrics
 
 # Restart
 systemctl --user restart antigravity-telegram-bridge.service

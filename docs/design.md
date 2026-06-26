@@ -206,7 +206,7 @@ End-to-end manual checks after install:
 4. From the allowed Telegram account send `/start`. Expect a reply.
 5. Send a follow-up; confirm session continuity.
 6. From a non-allowed account: no reply; log shows `drop unauth user=...`.
-7. `curl http://127.0.0.1:9099/health` returns `{"status":"ok",...}`.
+7. `curl http://127.0.0.1:9100/health` returns `{"status":"ok",...}`.
 8. Stop with `systemctl --user stop ...`; send another message → no reply.
 
 ## Index of source files

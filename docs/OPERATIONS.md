@@ -24,10 +24,10 @@ agy --version
 tail -20 ~/.antigravity/bridge/logs/bridge.log
 
 # Local health endpoint
-curl -s http://127.0.0.1:9099/health | jq .
+curl -s http://127.0.0.1:9100/health | jq .
 
 # Prometheus metrics
-curl -s http://127.0.0.1:9099/metrics
+curl -s http://127.0.0.1:9100/metrics
 ```
 
 ## Hardening (applied)
@@ -94,7 +94,7 @@ Tracked in bridge logs:
 - Reply length (chars)
 - Chat id
 
-Exposed via Prometheus endpoint at `http://127.0.0.1:9099/metrics`:
+Exposed via Prometheus endpoint at `http://127.0.0.1:9100/metrics`:
 
 - `antigravity_bridge_turns_total`
 - `antigravity_bridge_errors_total`

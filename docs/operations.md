@@ -201,7 +201,7 @@ INFO antigravity_telegram_bridge: drop unauth user=999999999
 7. Health check:
 
 ```sh
-curl http://127.0.0.1:9099/health
+curl http://127.0.0.1:9100/health
 ```
 
 If all pass, you're operating cleanly.
@@ -221,8 +221,12 @@ If all pass, you're operating cleanly.
 | Live log | `tail -f ~/.antigravity/bridge/logs/bridge.log` |
 | Recent journal | `journalctl --user -u antigravity-telegram-bridge.service -n 100 --no-pager` |
 | Validate config + tools | `echo '{"action":"setup"}' \| .venv/bin/python -m src.control` |
-| Health | `curl http://127.0.0.1:9099/health` |
-| Metrics | `curl http://127.0.0.1:9099/metrics` |
+| Health | `curl http://127.0.0.1:9100/health` |
+| Metrics | `curl http://127.0.0.1:9100/metrics` |
+
+The health/metrics port defaults to **9100** to avoid conflicting with the
+Kimi bridge on 9099. Set `AGY_BRIDGE_HEALTH_PORT` in the systemd unit to
+override.
 
 ### From inside agy
 
