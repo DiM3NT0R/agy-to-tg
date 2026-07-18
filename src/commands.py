@@ -158,6 +158,8 @@ async def handle_text_command(
 ) -> BridgeReply | None:
     """Return a reply for a slash command, else None (forward to agy)."""
     stripped = msg.text.strip()
+    if not stripped:
+        return None
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""

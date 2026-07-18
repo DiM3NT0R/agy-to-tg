@@ -47,7 +47,20 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"invalid JSON in {path}: {exc}") from exc
 
     tg_raw = raw.get("telegram") or {}
-    bot_token = tg_raw.get("bot_token") or ""
+    import os
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    bot_token = ""
+    if cred_dir:
+        token_file = Path(cred_dir) / "tg_bot_token"
+        if token_file.exists():
+            bot_token = token_file.read_text().strip()
+            
+    if not bot_token:
+        bot_token = os.environ.get("AGY_TELEGRAM_BOT_TOKEN") or ""
+        
+    if not bot_token:
+        bot_token = tg_raw.get("bot_token") or ""
+        
     if not isinstance(bot_token, str) or not bot_token:
         raise ConfigError("telegram.bot_token must be a non-empty string")
 

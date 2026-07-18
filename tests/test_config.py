@@ -88,3 +88,26 @@ def test_model_injection_rejected(tmp_path: Path, sample_config_dict: dict) -> N
     p.write_text(json.dumps(sample_config_dict))
     with pytest.raises(ConfigError, match="agy.model"):
         load_config(p)
+
+
+def test_load_config_env_token_override(tmp_path: Path, sample_config_dict: dict, monkeypatch) -> None:
+    monkeypatch.setenv("AGY_TELEGRAM_BOT_TOKEN", "env-token-xyz")
+    sample_config_dict["telegram"]["bot_token"] = "config-token"
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(sample_config_dict))
+    cfg = load_config(p)
+    assert cfg.telegram.bot_token == "env-token-xyz"
+
+
+def test_load_config_systemd_credential_override(tmp_path: Path, sample_config_dict: dict, monkeypatch) -> None:
+    cred_dir = tmp_path / "creds"
+    cred_dir.mkdir()
+    token_file = cred_dir / "tg_bot_token"
+    token_file.write_text("systemd-cred-token")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(cred_dir))
+    monkeypatch.setenv("AGY_TELEGRAM_BOT_TOKEN", "env-token")
+    sample_config_dict["telegram"]["bot_token"] = "config-token"
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(sample_config_dict))
+    cfg = load_config(p)
+    assert cfg.telegram.bot_token == "systemd-cred-token"

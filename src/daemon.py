@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from src.agy_runner import AgyResult
 from src.commands import BridgeReply, handle_callback, handle_text_command
 from src.config import Config, load_config
-from src.health import record_error, record_turn, start_server
+from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
@@ -229,8 +229,18 @@ async def run(
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
+    tick = 0
     async with tg:
         while not stop_event.is_set():
+            tick += 1
+            # Health gate: check memory every ~30 loop iterations (~30s at idle,
+            # faster when processing bursts). Self-terminate if over limit so
+            # systemd Restart=on-failure brings up a clean replacement.
+            if tick % 30 == 0 and not memory_healthy():
+                LOG.critical("memory limit exceeded — triggering self-restart")
+                stop_event.set()
+                break
+
             updates = await _fetch_updates(tg, state.last_update_id + 1)
             wh_updates = drain_webhook_updates()
             updates.extend(wh_updates)

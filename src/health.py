@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import time
 
 HEALTH_HOST = "127.0.0.1"
 HEALTH_PORT = int(os.environ.get("AGY_BRIDGE_HEALTH_PORT") or "9099")
+# Self-restart if resident memory exceeds this threshold (bytes).
+# 768 MiB — healthy state is 20–100MB.
+MEMORY_LIMIT_BYTES = int(os.environ.get("AGY_BRIDGE_MEMORY_LIMIT") or str(805_306_368))  # 768 MiB
 _started = time.time()
 _turns_total = 0
 _errors_total = 0
 _turn_latencies: list[float] = []
+_RSS_PATH = "/proc/self/statm"
 
 
 def record_turn() -> None:
@@ -26,21 +31,39 @@ def record_error() -> None:
 
 def record_latency(ms: float) -> None:
     _turn_latencies.append(ms)
-    if len(_turn_latencies) > 1000:
-        _turn_latencies[:500] = []
+    # Rotate at 100 entries — retain recent history without unbounded growth
+    if len(_turn_latencies) > 100:
+        _turn_latencies[:50] = []
+
+
+def _read_rss_bytes() -> int:
+    """Read resident memory from /proc/self/statm (page count * page size)."""
+    try:
+        with open(_RSS_PATH) as f:
+            parts = f.read().split()
+            if len(parts) >= 2:
+                return int(parts[1]) * os.sysconf("SC_PAGE_SIZE")
+    except Exception:
+        pass
+    return 0
+
+
+def memory_healthy() -> bool:
+    """True if resident memory is below the self-restart threshold."""
+    rss = _read_rss_bytes()
+    return rss < MEMORY_LIMIT_BYTES
 
 
 def _health_body() -> bytes:
-    try:
-        import os
-        mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    except Exception:
-        mem = 0
+    rss = _read_rss_bytes()
     return json.dumps({
         "status": "ok",
         "uptime_seconds": time.time() - _started,
         "turns_total": _turns_total,
         "errors_total": _errors_total,
+        "memory_rss_bytes": rss,
+        "memory_limit_bytes": MEMORY_LIMIT_BYTES,
+        "memory_healthy": memory_healthy(),
     }).encode()
 
 
