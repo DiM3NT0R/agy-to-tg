@@ -19,7 +19,7 @@ Forked from `hah23255/kimi-to-im` and adapted to drive Google's `agy` CLI instea
 ## English
 
 ### What it is
-A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persistent, isolated code editing sessions over Telegram chats. Version: `0.1.1`.
+A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persistent, isolated code editing sessions over Telegram chats. Version: `0.2.0`.
 
 ### Features
 | Feature | Status |
@@ -27,13 +27,17 @@ A Telegram bridge daemon for the Google Antigravity CLI (`agy`), allowing persis
 | Telegram ↔ `agy` messaging | ✅ |
 | Per-chat project isolation (`--new-project` / `--continue`) | ✅ |
 | Inline keyboard control panel (`/settings`, `/model`, `/mode`) | ✅ |
-| Photo + document upload support | ✅ |
+| Photo + document upload support with configurable safety routing | ✅ |
+| Configurable file type allowlist (pass/warn/hold/block per category) | ✅ |
+| Per-user rate limiting with sliding window | ✅ |
+| Memory health gate with automatic self-restart | ✅ |
+| Zombie subprocess reaping + garbage collection | ✅ |
 | Multi-user FIFO turn queue | ✅ |
 | Webhook mode with HMAC verification | ✅ |
 | Health endpoint (`/health`) and Prometheus metrics (`/metrics`) | ✅ |
 | `systemd --user` service with hardening | ✅ |
 | Plugin tool for `agy` (`bridge start/stop/status/logs/setup`) | ✅ |
-| 112 tests, 100 % pass | ✅ |
+| 105 tests, 100 % pass | ✅ |
 
 ### Quickstart
 
@@ -84,6 +88,8 @@ For the full step-by-step guide see `docs/deployment.md`. Day-to-day operations 
 * `/settings` - Inline control panel (model, mode, reset)
 * `/reset` - Start a fresh `agy` project for this chat
 * `/image on|off` - Toggle photo processing
+* `/files` - List inbox files
+* `/files clean` - Purge all inbox files
 * `/queue` - Queue status
 
 ### Architecture Mapping
@@ -141,7 +147,7 @@ flowchart LR
 | Здравна точка (`/health`) и Prometheus метрики (`/metrics`) | ✅ |
 | `systemd --user` услуга със защити | ✅ |
 | Инструмент-плъгин за `agy` (`bridge start/stop/status/logs/setup`) | ✅ |
-| 112 теста, 100 % преминаване | ✅ |
+| 105 теста, 100 % преминаване | ✅ |
 
 ### Бърз старт
 
@@ -192,6 +198,8 @@ flowchart LR
 * `/settings` - Контролен панел (модел, режим, ресет)
 * `/reset` - Стартиране на нов `agy` проект за този чат
 * `/image on|off` - Включване на обработка на снимки
+* `/files` - Списък с файлове
+* `/files clean` - Изтриване на всички файлове
 * `/queue` - Статус на опашката
 
 ### Архитектурно описание
