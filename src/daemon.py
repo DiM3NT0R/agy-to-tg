@@ -15,7 +15,8 @@ from src.agy_runner import AgyResult
 from src.commands import BridgeReply, handle_callback, handle_text_command
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
-from src.media import build_media_prompt
+from src.media import build_media_prompt, clean_inbox
+from src.okf_memory import attach_memory
 from src.queue import TurnQueue
 from src.state import ChatState, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
@@ -126,6 +127,12 @@ async def _do_turn(
             cs.has_session = True
         cs.turn_count += 1
         reply = text or "(empty reply)"
+    # Post-turn maintenance: update OKF memory layer, clean inbox
+    try:
+        attach_memory(cs.chat_dir, None, bridge_version="0.2.0")
+        clean_inbox(cs.chat_dir)
+    except Exception:
+        pass
     try:
         await tg.send_message(msg.chat_id, reply)
     except Exception as err:
@@ -227,6 +234,8 @@ async def run(
     stop_event: asyncio.Event,
 ) -> None:
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
+    _QUEUE.max_per_user = cfg.safety.queue.max_per_user
+    _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
     tick = 0
@@ -249,6 +258,10 @@ async def run(
 
                 msg = parse_update_for_daemon(upd)
                 if msg is not None:
+                    allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
+                    if not allowed:
+                        await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
+                        continue
                     await _process_text(
                         msg, tg, state, state_path, chats_root,
                         cfg, agy_path, info,
