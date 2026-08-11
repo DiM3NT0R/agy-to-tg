@@ -48,6 +48,7 @@ def _build_args(
     print_timeout: str,
     effort: str = "",
     chat_dir: str = "",
+    conversation_id: str = "",
 ) -> list[str]:
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
@@ -55,7 +56,10 @@ def _build_args(
     args = [agy_path, "-p", prompt]
 
     if has_session:
-        args.append("--continue")
+        if conversation_id:
+            args.extend(["--conversation", conversation_id])
+        else:
+            args.append("--continue")
     else:
         args.append("--new-project")
     if model:
@@ -80,6 +84,7 @@ async def run_agy(
     timeout: float | None = None,
     print_timeout: str = "15m",
     effort: str = "",
+    conversation_id: str = "",
     on_event: "Callable[[dict], Awaitable[None]] | None" = None,
 ) -> AgyResult:
     """Run agy in print mode. Optionally stream JSON events."""
@@ -93,6 +98,7 @@ async def run_agy(
         print_timeout=print_timeout,
         effort=effort,
         chat_dir=chat_dir,
+        conversation_id=conversation_id,
     )
     if on_event is not None:
         args.extend(["--output-format", "stream-json"])

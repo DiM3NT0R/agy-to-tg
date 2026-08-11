@@ -35,7 +35,7 @@ class ChatState:
     turn_count: int = 0  # successful turns served on this chat
     effort: str = "" # "low", "medium", "high"
     print_timeout: str = "" # e.g. "30m"
-
+    conversation_id: str = "" # UUID of the currently selected conversation
 
 @dataclass
 class State:
@@ -82,6 +82,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         return None
     if not _CHAT_DIR_RE.match(p.name):
         return None
+
     return ChatState(
         chat_dir=str(p),
         has_session=bool(raw.get("has_session", False)),
@@ -91,6 +92,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
         effort=raw.get("effort", "") if isinstance(raw.get("effort"), str) else "",
         print_timeout=raw.get("print_timeout", "") if isinstance(raw.get("print_timeout"), str) else "",
+        conversation_id=raw.get("conversation_id", "") if isinstance(raw.get("conversation_id"), str) else "",
     )
 
 

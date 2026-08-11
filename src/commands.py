@@ -103,6 +103,7 @@ def _settings_keyboard() -> InlineKeyboard:
         ],
         [
             {"text": "⚙️ Изменить Effort", "callback_data": "nav:effort"},
+            {"text": "📁 Диалоги", "callback_data": "nav:projects"},
         ],
         [{"text": "🧹 Сбросить сессию", "callback_data": "R"}],
         [{"text": "🔄 Обновить", "callback_data": "nav:settings"}],
@@ -156,6 +157,79 @@ def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=f"⚙️ Выберите effort для этого чата\n\nТекущий: {cs.effort or 'default'}",
         keyboard=_effort_keyboard(cs.effort),
+    )
+
+import sqlite3
+import os
+
+def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
+    rows: InlineKeyboard = []
+    
+    db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
+    projects = []
+    has_more = False
+    
+    # 1. Fetch global from SQLite
+    sqlite_projects = []
+    if os.path.exists(db_path):
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT conversation_id, preview, title, workspace_uris, last_modified_time FROM conversation_summaries "
+                    f"ORDER BY last_modified_time DESC LIMIT 11 OFFSET {offset}"
+                )
+                results = cursor.fetchall()
+                if len(results) > 10:
+                    has_more = True
+                    results = results[:10]
+                for row in results:
+                    cid, preview, title, wsuris, mod_time = row
+                    date_str = ""
+                    if mod_time and len(mod_time) >= 16:
+                        date_str = f"{mod_time[8:10]}.{mod_time[5:7]} {mod_time[11:16]}"
+                    
+                    if title and preview and title != preview:
+                        name_core = f"{title}: {preview}"
+                    elif title:
+                        name_core = title
+                    elif preview:
+                        name_core = preview
+                    else:
+                        name_core = cid
+                    
+                    name = f"[{date_str}] {name_core}" if date_str else name_core
+                    sqlite_projects.append({"id": cid, "snippet": name})
+        except Exception:
+            pass
+
+    projects = sqlite_projects
+            
+    # Limit to 10 items for display on this page
+    if len(projects) > 10:
+        has_more = True
+        projects = projects[:10]
+
+    if not projects:
+        rows.append([{"text": "Нет сохраненных диалогов", "callback_data": "nav:settings"}])
+    for p in projects:
+        marker = "● " if p.get("id") == cs.conversation_id else "○ "
+        text = marker + p.get("snippet", "")
+        if len(text) > 40:
+            text = text[:37] + "..."
+        rows.append([{"text": text, "callback_data": f"P:{p.get('id')}"}])
+        
+    nav_row = [{"text": "⬅️ Назад", "callback_data": "nav:settings"}]
+    if has_more:
+        nav_row.append({"text": "Ещё 10 ➡️", "callback_data": f"nav:projects:{offset + 10}"})
+    if offset > 0:
+        prev_offset = max(0, offset - 10)
+        nav_row.insert(1, {"text": "⬅️ Пред.", "callback_data": f"nav:projects:{prev_offset}"})
+        
+    rows.append(nav_row)
+    return BridgeReply(
+        text="📁 **Выбор сессии:**\n\nВыберите диалог со всего сервера:",
+        keyboard=rows,
     )
 
 def _render_model_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
@@ -271,10 +345,22 @@ def handle_callback(
         return _render_mode_picker(cs, cfg)
     if data == "nav:effort":
         return _render_effort_picker(cs, cfg)
+    if data == "nav:projects" or data.startswith("nav:projects:"):
+        parts = data.split(":")
+        offset = int(parts[2]) if len(parts) > 2 else 0
+        return _render_projects_picker(cs, offset)
     if data == "R":
         cs.has_session = False
+        cs.conversation_id = ""
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Сессия сброшена")
+        
+    if data.startswith("P:"):
+        choice = data[2:]
+        cs.conversation_id = choice
+        cs.has_session = True
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Диалог выбран")
 
     if data.startswith("m:"):
         choice = data[2:]

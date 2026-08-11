@@ -97,6 +97,11 @@ async def execute_agy(
         updater = StatusUpdater(tg, chat_id, status_msg_id)
 
     async def handle_event(data: dict):
+        if data.get("event") == "init":
+            cid = data.get("conversation_id")
+            if cid:
+                cs.conversation_id = cid
+        
         if not updater:
             return
         if data.get("event") == "step_update":
@@ -141,7 +146,8 @@ async def execute_agy(
             timeout=AGY_TIMEOUT_S,
             effort=cs.effort,
             print_timeout=cs.print_timeout or "15m",
-            on_event=handle_event if updater else None,
+            conversation_id=cs.conversation_id if cs.has_session else "",
+            on_event=handle_event,
         )
         if result.exit_code != 0:
             LOG.error("agy exited with %d. stderr: %s", result.exit_code, result.stderr)
