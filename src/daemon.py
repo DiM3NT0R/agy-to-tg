@@ -350,6 +350,20 @@ def main() -> None:
 
         tg = TelegramClient(cfg.telegram.bot_token)
         try:
+            # Set bot commands for Telegram Menu button
+            bot_commands = [
+                {"command": "start", "description": "Настройки и меню сессий"},
+                {"command": "settings", "description": "Настройки"},
+                {"command": "reset", "description": "Сбросить текущую сессию"},
+                {"command": "image", "description": "Вкл/выкл анализ фото"},
+                {"command": "files", "description": "Файлы в рабочей директории"},
+                {"command": "queue", "description": "Очередь задач"},
+            ]
+            try:
+                await tg.set_my_commands(bot_commands)
+            except Exception as err:
+                LOG.warning("setMyCommands failed: %s", err)
+
             bot_username = await _detect_bot_username(cfg)
             info = DaemonInfo(
                 bot_username=bot_username,

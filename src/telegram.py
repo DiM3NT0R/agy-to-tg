@@ -159,6 +159,15 @@ class TelegramClient:
             raise RuntimeError(f"telegram getMe failed: {data.get('description')}")
         return dict(data.get("result") or {})
 
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> dict[str, Any]:
+        assert self._client is not None
+        payload = {"commands": commands}
+        r = await self._client.post(f"{self._base}/setMyCommands", json=payload)
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"setMyCommands failed: {data.get('description')}")
+        return dict(data.get("result") or {})
+
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]:
         assert self._client is not None
         r = await self._client.get(f"{self._base}/getUpdates", params={
