@@ -240,6 +240,15 @@ class TelegramClient:
         if not data.get("ok"):
             return
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        """Delete a message."""
+        assert self._client is not None
+        payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id}
+        r = await self._client.post(f"{self._base}/deleteMessage", json=payload)
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"deleteMessage failed: {data.get('description')}")
+
     async def send_chat_action(self, chat_id: int, action: str = "typing", message_thread_id: int | None = None) -> None:
         assert self._client is not None
         payload: dict[str, Any] = {"chat_id": chat_id, "action": action}

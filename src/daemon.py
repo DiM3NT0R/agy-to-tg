@@ -46,6 +46,7 @@ class _TelegramLike(Protocol):
     ) -> None: ...
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
+    async def delete_message(self, chat_id: int, message_id: int) -> None: ...
 
 
 RunAgyFunc = Callable[..., Awaitable[AgyResult]]
@@ -270,6 +271,10 @@ async def run(
                         except Exception as e:
                             import traceback
                             LOG.error("Error in _process_text: %s\n%s", e, traceback.format_exc())
+                            try:
+                                await tg.send_message(msg.chat_id, "❌ Произошла внутренняя ошибка моста при обработке запроса. Пожалуйста, повторите попытку.", message_thread_id=msg.message_thread_id)
+                            except Exception:
+                                pass
                     
                     asyncio.create_task(safe_process_text(
                         msg, tg, state, state_path, chats_root,
@@ -285,6 +290,10 @@ async def run(
                         except Exception as e:
                             import traceback
                             LOG.error("Error in _process_callback: %s\n%s", e, traceback.format_exc())
+                            try:
+                                await tg.answer_callback_query(cq.callback_query_id, text="❌ Внутренняя ошибка. Повторите попытку.")
+                            except Exception:
+                                pass
                     
                     asyncio.create_task(safe_process_callback(
                         cq, tg, state, state_path, chats_root, cfg, info,

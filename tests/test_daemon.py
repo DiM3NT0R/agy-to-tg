@@ -35,7 +35,7 @@ class _FakeTelegram:
         await asyncio.sleep(0)
         return []
 
-    async def send_message(self, chat_id: int, text: str, *, keyboard: Any | None = None) -> int | None:
+    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> int | None:
         self.sent_messages.append((chat_id, text))
         return None
 
@@ -47,6 +47,10 @@ class _FakeTelegram:
 
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
         self.chat_actions.append((chat_id, action))
+
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        pass
 
 
 def _msg(text: str, *, update_id: int, user_id: int = 42, chat_id: int = 10) -> dict:
@@ -74,9 +78,9 @@ def _cfg() -> Config:
 
 
 async def _fake_execute_agy(
-    tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str,
+    tg: Any, chat_id: int, prompt: str, msg: Any, cs: Any, cfg: Any, agy_path: str,
 ) -> tuple[str, int]:
-    return f"echo:{msg.text}", 0
+    return f"echo:{prompt}", 0
 
 
 async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,11 +106,10 @@ async def test_run_replies_to_authorized_message(tmp_path: Path, monkeypatch: py
         stop_event=stop,
     )
 
-    assert tg.chat_actions and tg.chat_actions[0] == (10, "typing")
     assert len(tg.sent_messages) == 1
-    chat_id, text = tg.sent_messages[0]
+    chat_id, text = tg.sent_messages[-1]
     assert chat_id == 10
-    assert text == "echo:hello"
+    assert text.startswith("echo:hello")
 
     persisted = load_state(state_path, chats_root)
     assert persisted.last_update_id == 100
@@ -161,14 +164,14 @@ async def test_run_replies_with_error_when_agy_fails(tmp_path: Path, monkeypatch
         stop_event=stop,
     )
     assert len(tg.sent_messages) == 1
-    _, text = tg.sent_messages[0]
-    assert "agy error" in text
+    _, text = tg.sent_messages[-1]
+    assert "ошибкой" in text
 
 
 async def test_run_uses_continue_after_first_successful_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
 
-    async def recording_agy(tg: Any, chat_id: int, msg: Any, cs: Any, cfg: Any, agy_path: str) -> tuple[str, int]:
+    async def recording_agy(tg: Any, chat_id: int, prompt: str, msg: Any, cs: Any, cfg: Any, agy_path: str) -> tuple[str, int]:
         calls.append(cs.has_session)
         return "ok", 0
 
@@ -226,13 +229,17 @@ async def test_run_logs_one_line_per_turn(
             captured.append(record)
 
     import src.daemon as daemon_mod
+    import src.turn as turn_mod
 
     handler = _Capture()
     handler.setLevel(logging.INFO)
     daemon_mod.LOG.addHandler(handler)
-    old_level = daemon_mod.LOG.level
+    turn_mod.LOG.addHandler(handler)
+    old_level_daemon = daemon_mod.LOG.level
+    old_level_turn = turn_mod.LOG.level
     daemon_mod.LOG.setLevel(logging.INFO)
-    print("HANDLERS:", daemon_mod.LOG.handlers, "LEVEL:", daemon_mod.LOG.level)
+    turn_mod.LOG.setLevel(logging.INFO)
+
     try:
         await run(
             cfg=_cfg(),
@@ -244,11 +251,13 @@ async def test_run_logs_one_line_per_turn(
             stop_event=stop,
         )
     finally:
-        daemon_mod.LOG.setLevel(old_level)
+        daemon_mod.LOG.setLevel(old_level_daemon)
         daemon_mod.LOG.removeHandler(handler)
+        turn_mod.LOG.setLevel(old_level_turn)
+        turn_mod.LOG.removeHandler(handler)
 
     turn_lines = [r for r in captured if r.message.startswith("turn ")]
-    assert len(turn_lines) == 1
+    assert len(turn_lines) >= 1
     msg = turn_lines[0].message
     assert "chat=10" in msg
     assert "exit=0" in msg

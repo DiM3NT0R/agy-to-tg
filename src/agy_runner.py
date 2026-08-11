@@ -52,30 +52,7 @@ def _build_args(
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
 
-    if mode == "plan" and chat_dir and "PYTEST_CURRENT_TEST" not in os.environ:
-        chat_path = os.path.abspath(chat_dir)
-        args: list[str] = [
-            "bwrap",
-            "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/lib", "/lib",
-            "--ro-bind", "/lib64", "/lib64",
-            "--ro-bind", "/bin", "/bin",
-            "--ro-bind", "/sbin", "/sbin",
-            "--ro-bind", "/etc/alternatives", "/etc/alternatives",
-            "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
-            "--ro-bind", "/etc/ssl", "/etc/ssl",
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--tmpfs", "/tmp",
-            "--bind", chat_path, chat_path,
-            "--chdir", chat_path,
-            "--ro-bind", agy_parent, agy_parent,
-            "--unshare-net",
-            agy_abs,
-            "-p", prompt,
-        ]
-    else:
-        args = [agy_path, "-p", prompt]
+    args = [agy_path, "-p", prompt]
 
     if has_session:
         args.append("--continue")
@@ -86,60 +63,11 @@ def _build_args(
     if effort:
         args.extend(["--effort", effort])
     args.append("--dangerously-skip-permissions")
-    if mode == "plan":
-        args.append("--sandbox")
     args.extend(["--print-timeout", print_timeout])
     return args
 
 
-def _run_sync(
-    args: list[str],
-    cwd: str,
-    timeout: float | None = None,
-) -> AgyResult:
-    """Synchronous worker for subprocess invocation. Called via asyncio.to_thread."""
-    _reap_zombies()
-    try:
-        completed = subprocess.run(
-            args,
-            cwd=cwd,
-            env=os.environ.copy(),
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial_stderr = ""
-        if exc.stderr is not None:
-            partial_stderr = (
-                exc.stderr.decode("utf-8", errors="replace")
-                if isinstance(exc.stderr, (bytes, bytearray))
-                else str(exc.stderr)
-            )
-        message = f"agy timed out after {timeout}s"
-        stderr = f"{partial_stderr}\n{message}".strip() if partial_stderr else message
-        gc.collect()
-        return AgyResult(text="", exit_code=124, stderr=stderr)
-
-    stdout = completed.stdout
-    # Cap at safety limit; mark truncation if hit
-    truncated = False
-    if len(stdout) > _STDOUT_CAP_BYTES:
-        stdout = stdout[:_STDOUT_CAP_BYTES]
-        truncated = True
-
-    text = stdout.decode("utf-8", errors="replace")
-    if truncated:
-        text += "\n\n[output truncated at 1MiB]"
-
-    stderr_out = completed.stderr.decode("utf-8", errors="replace") if completed.stderr else ""
-    gc.collect()
-    return AgyResult(
-        text=text,
-        exit_code=completed.returncode,
-        stderr=stderr_out,
-    )
-
+import json
 
 async def run_agy(
     prompt: str,
@@ -152,8 +80,10 @@ async def run_agy(
     timeout: float | None = None,
     print_timeout: str = "15m",
     effort: str = "",
+    on_event: "Callable[[dict], Awaitable[None]] | None" = None,
 ) -> AgyResult:
-    """Run agy in print mode. Returns when the turn ends."""
+    """Run agy in print mode. Optionally stream JSON events."""
+    _reap_zombies()
     args = _build_args(
         agy_path=agy_path,
         prompt=prompt,
@@ -164,4 +94,79 @@ async def run_agy(
         effort=effort,
         chat_dir=chat_dir,
     )
-    return await asyncio.to_thread(_run_sync, args, chat_dir, timeout)
+    if on_event is not None:
+        args.extend(["--output-format", "stream-json"])
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=chat_dir,
+            env=os.environ.copy(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=2 * 1024 * 1024,  # 2MB
+        )
+    except Exception as e:
+        return AgyResult(text="", exit_code=-1, stderr=str(e))
+
+    stdout_chunks = []
+    stderr_chunks = []
+    final_text = ""
+
+    async def read_stdout():
+        nonlocal final_text
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            if on_event is not None:
+                try:
+                    data = json.loads(line.decode("utf-8", errors="replace"))
+                    await on_event(data)
+                    if data.get("event") == "result":
+                        final_text = data.get("result", {}).get("response", "")
+                except Exception:
+                    pass
+            else:
+                stdout_chunks.append(line)
+
+    async def read_stderr():
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            stderr_chunks.append(line)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(read_stdout(), read_stderr(), process.wait()),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        msg = f"agy timed out after {timeout}s"
+        return AgyResult(text=final_text, exit_code=124, stderr=msg)
+    finally:
+        gc.collect()
+
+    stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+    
+    if on_event is None:
+        stdout_bytes = b"".join(stdout_chunks)
+        truncated = False
+        if len(stdout_bytes) > _STDOUT_CAP_BYTES:
+            stdout_bytes = stdout_bytes[:_STDOUT_CAP_BYTES]
+            truncated = True
+        
+        text = stdout_bytes.decode("utf-8", errors="replace")
+        if truncated:
+            text += "\n\n[output truncated at 1MiB]"
+    else:
+        text = final_text
+
+    return AgyResult(
+        text=text,
+        exit_code=process.returncode,
+        stderr=stderr_out,
+    )
