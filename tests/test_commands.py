@@ -28,44 +28,44 @@ class _FakeMsg:
 async def test_start_command() -> None:
     reply = await handle_text_command(_FakeMsg("/start"), _state(), _cfg())
     assert reply is not None
-    assert "Welcome" in reply.text
+    assert "Привет" in reply.text
 
 
 async def test_help_command() -> None:
     reply = await handle_text_command(_FakeMsg("/help"), _state(), _cfg())
     assert reply is not None
-    assert "Commands" in reply.text
+    assert "Команды" in reply.text
 
 
 async def test_info_shows_default_model() -> None:
-    reply = await handle_text_command(_FakeMsg("/info"), _state(), _cfg(model="gemini-2.5-pro"))
+    reply = await handle_text_command(_FakeMsg("/info"), _state(), _cfg(model="gemini-3.6-flash-high"))
     assert reply is not None
-    assert "gemini-2.5-pro" in reply.text
+    assert "gemini-3.6-flash-high" in reply.text
 
 
 async def test_info_no_session() -> None:
     reply = await handle_text_command(_FakeMsg("/info"), _state(), _cfg())
     assert reply is not None
-    assert "fresh" in reply.text.lower()
+    assert "чистая" in reply.text.lower()
 
 
 async def test_thinking_not_available() -> None:
     reply = await handle_text_command(_FakeMsg("/thinking on"), _state(), _cfg())
     assert reply is not None
-    assert "not available" in reply.text.lower()
+    assert "недоступно" in reply.text.lower()
 
 
 async def test_model_picker() -> None:
-    reply = await handle_text_command(_FakeMsg("/model"), _state(), _cfg(model="gemini-2.5-pro"))
+    reply = await handle_text_command(_FakeMsg("/model"), _state(), _cfg(model="gemini-3.6-flash-high"))
     assert reply is not None
     assert reply.keyboard is not None
 
 
 async def test_model_set() -> None:
     cs = _state()
-    reply = await handle_text_command(_FakeMsg("/model gemini-2.5-pro"), cs, _cfg())
+    reply = await handle_text_command(_FakeMsg("/model gemini-3.6-flash-high"), cs, _cfg())
     assert reply is not None
-    assert cs.model == "gemini-2.5-pro"
+    assert cs.model == "gemini-3.6-flash-high"
 
 
 async def test_reset_clears_session() -> None:
@@ -89,10 +89,10 @@ async def test_callback_nav_settings() -> None:
 
 async def test_callback_model_choice() -> None:
     cs = _state()
-    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-2.5-pro")
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-3.6-flash-high")
     reply = handle_callback(cq, cs, _cfg())
-    assert cs.model == "gemini-2.5-pro"
-    assert "gemini-2.5-pro" in reply.toast
+    assert cs.model == "gemini-3.6-flash-high"
+    assert "gemini-3.6-flash-high" in reply.toast
 
 
 async def test_callback_reset() -> None:
@@ -101,7 +101,7 @@ async def test_callback_reset() -> None:
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="R")
     reply = handle_callback(cq, cs, _cfg())
     assert cs.has_session is False
-    assert "reset" in reply.toast.lower()
+    assert "сброшена" in reply.toast.lower()
 
 
 async def test_callback_mode_choice() -> None:

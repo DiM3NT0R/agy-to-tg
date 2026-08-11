@@ -29,8 +29,9 @@ class _FakeTG:
         self._error = get_file_error
         self.get_file_calls: list[str] = []
 
-    async def send_message(self, chat_id: int, text: str) -> None:
+    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> int | None:
         self.sent.append((chat_id, text))
+        return None
 
     async def get_file(self, file_id: str) -> bytes:
         self.get_file_calls.append(file_id)
@@ -46,12 +47,14 @@ class _FakeMsg:
         chat_id: int = 42,
         photo: list[dict] | None = None,
         document: dict | None = None,
+        message_thread_id: int | None = None,
     ) -> None:
         self.text = text
         self.chat_id = chat_id
         self.user_id = 99
         self.photo = photo
         self.document = document
+        self.message_thread_id = message_thread_id
 
 
 class _FakeState:
@@ -183,7 +186,8 @@ async def test_prompt_text_only() -> None:
     tg = _FakeTG()
     msg = _FakeMsg(text="hello")
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
-    assert result == "hello"
+    assert result is not None
+    assert result.startswith("hello")
 
 
 async def test_prompt_photo_disabled() -> None:
@@ -199,7 +203,7 @@ async def test_prompt_photo_too_large() -> None:
     msg = _FakeMsg(photo=[{"file_id": "abc", "file_size": MAX_PHOTO_SIZE + 1}])
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
     assert result is None
-    assert any("too large" in s for _, s in tg.sent)
+    assert any("большо" in s for _, s in tg.sent)
 
 
 async def test_prompt_document_too_large() -> None:
@@ -214,7 +218,7 @@ async def test_prompt_document_too_large() -> None:
     )
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
     assert result is None
-    assert any("too large" in s for _, s in tg.sent)
+    assert any("большо" in s for _, s in tg.sent)
 
 
 async def test_prompt_document_unsupported_mime() -> None:
@@ -229,7 +233,7 @@ async def test_prompt_document_unsupported_mime() -> None:
     )
     result = await build_media_prompt(msg, tg, _FakeState(), _FakeCfg())
     assert result is None
-    assert any("Unsupported" in s for _, s in tg.sent)
+    assert any("Неподдерживаем" in s for _, s in tg.sent)
 
 
 async def test_prompt_document_injects_path(tmp_path: Path) -> None:
@@ -262,7 +266,7 @@ async def test_prompt_download_error_reported(tmp_path: Path) -> None:
     )
     result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _FakeCfg())
     assert result is None
-    assert any("Download failed" in s for _, s in tg.sent)
+    assert any("Ошибка загрузки" in s for _, s in tg.sent)
 
 
 async def test_prompt_both_text_and_media(tmp_path: Path) -> None:
