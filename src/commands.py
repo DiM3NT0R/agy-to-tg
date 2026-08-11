@@ -167,7 +167,11 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
     
     db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
     projects = []
+    seen_ids = set()
     has_more = False
+    
+    # 1. Fetch global from SQLite
+    sqlite_projects = []
     if os.path.exists(db_path):
         try:
             with sqlite3.connect(db_path) as conn:
@@ -182,8 +186,6 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
                     results = results[:10]
                 for row in results:
                     cid, preview, title, wsuris, mod_time = row
-                    
-                    # Parse timestamp (e.g., "2026-08-11 18:10:51.853...")
                     date_str = ""
                     if mod_time and len(mod_time) >= 16:
                         date_str = f"{mod_time[8:10]}.{mod_time[5:7]} {mod_time[11:16]}"
@@ -198,9 +200,29 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
                         name_core = cid
                     
                     name = f"[{date_str}] {name_core}" if date_str else name_core
-                    projects.append({"id": cid, "snippet": name})
+                    sqlite_projects.append({"id": cid, "snippet": name})
         except Exception:
             pass
+
+    # 2. Inject local projects at the top if we are on the first page
+    if offset == 0:
+        for p in cs.projects:
+            pid = p.get("id")
+            if pid and pid not in seen_ids:
+                projects.append({"id": pid, "snippet": f"[Текущий чат] {p.get('snippet')}"})
+                seen_ids.add(pid)
+                
+    # 3. Add SQLite projects
+    for p in sqlite_projects:
+        pid = p.get("id")
+        if pid not in seen_ids:
+            projects.append(p)
+            seen_ids.add(pid)
+            
+    # Limit to 10 items for display on this page
+    if len(projects) > 10:
+        has_more = True
+        projects = projects[:10]
 
     if not projects:
         rows.append([{"text": "Нет сохраненных диалогов", "callback_data": "nav:settings"}])
