@@ -32,9 +32,19 @@ class AgyConfig:
 
 
 @dataclass(frozen=True)
+class QueueConfig:
+    max_per_user: int = 10
+    cooldown_seconds: float = 0.0
+
+@dataclass(frozen=True)
+class SafetyConfig:
+    queue: QueueConfig = field(default_factory=QueueConfig)
+
+@dataclass(frozen=True)
 class Config:
     telegram: TelegramConfig
     agy: AgyConfig
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
 
 
 def load_config(path: Path) -> Config:
@@ -98,8 +108,8 @@ def load_config(path: Path) -> Config:
     return Config(
         telegram=TelegramConfig(
             bot_token=bot_token,
-            allowed_user_ids=list(allowed_user_ids),
-            allowed_chat_ids=list(allowed_chat_ids),
+            allowed_user_ids=allowed_user_ids,
+            allowed_chat_ids=allowed_chat_ids,
         ),
         agy=AgyConfig(
             chats_root=str(a_raw.get("chats_root") or ""),
@@ -107,4 +117,5 @@ def load_config(path: Path) -> Config:
             model=model,
             mode=mode,
         ),
+        safety=SafetyConfig()
     )

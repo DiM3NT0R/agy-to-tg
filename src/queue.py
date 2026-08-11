@@ -24,6 +24,26 @@ class TurnQueue:
     active: bool = False
     pending: list[tuple[int, "InboundMessage", asyncio.Future[str | None]]] = field(default_factory=list)
     owner_chat_id: int = 0
+    max_per_user: int = 10
+    cooldown_seconds: float = 0.0
+    _last_seen: dict[int, float] = field(default_factory=dict)
+
+    def check_ratelimit(self, user_id: int) -> tuple[bool, int]:
+        import time
+        if user_id == self.owner_chat_id:
+            return True, 0
+        now = time.time()
+        last = self._last_seen.get(user_id, 0.0)
+        wait = max(0, int(self.cooldown_seconds - (now - last)))
+        if wait > 0:
+            return False, wait
+        
+        user_pending = sum(1 for cid, _, _ in self.pending if cid == user_id)
+        if user_pending >= self.max_per_user:
+            return False, 60
+            
+        self._last_seen[user_id] = now
+        return True, 0
 
     def _pos(self, chat_id: int) -> int:
         for i, (cid, _, _) in enumerate(self.pending):
