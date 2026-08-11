@@ -101,12 +101,6 @@ async def execute_agy(
             cid = data.get("conversation_id")
             if cid:
                 cs.conversation_id = cid
-                # Add to projects if not exists
-                if not any(p.get("id") == cid for p in cs.projects):
-                    snippet = prompt[:40] + "..." if len(prompt) > 40 else prompt
-                    cs.projects.insert(0, {"id": cid, "snippet": snippet})
-                    # Keep max 10 projects
-                    cs.projects = cs.projects[:10]
         
         if not updater:
             return

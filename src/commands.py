@@ -167,7 +167,6 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
     
     db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
     projects = []
-    seen_ids = set()
     has_more = False
     
     # 1. Fetch global from SQLite
@@ -204,20 +203,7 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
         except Exception:
             pass
 
-    # 2. Inject local projects at the top if we are on the first page
-    if offset == 0:
-        for p in cs.projects:
-            pid = p.get("id")
-            if pid and pid not in seen_ids:
-                projects.append({"id": pid, "snippet": f"[Текущий чат] {p.get('snippet')}"})
-                seen_ids.add(pid)
-                
-    # 3. Add SQLite projects
-    for p in sqlite_projects:
-        pid = p.get("id")
-        if pid not in seen_ids:
-            projects.append(p)
-            seen_ids.add(pid)
+    projects = sqlite_projects
             
     # Limit to 10 items for display on this page
     if len(projects) > 10:
