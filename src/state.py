@@ -33,6 +33,8 @@ class ChatState:
     mode: str = ""  # "" → use cfg.agy.mode; values: "code" | "plan"
     photo_enabled: bool = True  # toggle for photo processing
     turn_count: int = 0  # successful turns served on this chat
+    effort: str = "" # "low", "medium", "high"
+    print_timeout: str = "" # e.g. "30m"
 
 
 @dataclass
@@ -87,6 +89,8 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         mode=_safe_mode(raw.get("mode", "")),
         photo_enabled=_safe_bool(raw.get("photo_enabled", True)),
         turn_count=_safe_turn_count(raw.get("turn_count", 0)),
+        effort=raw.get("effort", "") if isinstance(raw.get("effort"), str) else "",
+        print_timeout=raw.get("print_timeout", "") if isinstance(raw.get("print_timeout"), str) else "",
     )
 
 

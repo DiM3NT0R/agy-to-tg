@@ -18,11 +18,8 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 
-MODEL_CHOICES: tuple[str, ...] = (
-    "gemini-3.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-)
+MODEL_CHOICES: tuple[str, ...] = ("gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.5-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking")
+EFFORT_CHOICES: tuple[str, ...] = ("low", "medium", "high")
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),
     ("plan", "Plan (read-only sandbox)"),
@@ -30,26 +27,28 @@ MODE_CHOICES: tuple[tuple[str, str], ...] = (
 _DEFAULT_TOKEN = "_DEFAULT"
 
 WELCOME_TEXT = (
-    "👋 Welcome! I'm your Antigravity bridge bot.\n\n"
-    "Send me any message and I'll forward it to the agy CLI. "
-    "Each chat has its own session that persists across messages.\n\n"
-    "Commands: /start · /help · /status · /settings · /model · /mode · /reset"
+    "👋 Привет! Я твой Telegram-бот для Antigravity.\n\n"
+    "Отправь мне любое сообщение, и я передам его агенту agy. "
+    "Для каждого чата или темы создается своя отдельная сессия.\n\n"
+    "Команды: /start · /help · /status · /settings · /model · /mode · /reset"
 )
 
 HELP_TEXT = (
-    "📖 Antigravity Bridge Help\n\n"
-    "Send any text to chat with agy.\n\n"
-    "Commands:\n"
-    "/status   — read-only system + chat summary\n"
-    "/settings — control panel with buttons\n"
-    "/model    — pick a model (per-chat override)\n"
-    "/mode     — pick a mode (Code or Plan)\n"
-    "/reset    — fresh agy session for this chat\n"
-    "/info     — same as /status\n"
-    "/image on|off — toggle photo processing\n"
-    "/files    — list recent uploads\n"
-    "/start, /help — these messages\n\n"
-    "Per-chat overrides take precedence over config.json."
+    "📖 Справка по мосту Antigravity\n\n"
+    "Отправьте любой текст для общения с agy.\n\n"
+    "Команды:\n"
+    "/status   — сводка по системе и текущему чату\n"
+    "/settings — панель управления с кнопками\n"
+    "/model    — выбрать модель (переопределяет настройки для чата)\n"
+    "/effort   — выбрать уровень effort (low/medium/high)\n"
+    "/timeout  — таймаут работы агента (напр. 30m, 1h)\n"
+    "/mode     — выбрать режим (Code или Plan)\n"
+    "/reset    — начать чистую сессию agy для этого чата\n"
+    "/info     — то же, что и /status\n"
+    "/image on|off — вкл/выкл обработку фото\n"
+    "/files    — список недавних файлов\n"
+    "/start, /help — показать эти сообщения\n\n"
+    "Настройки для конкретного чата имеют приоритет над config.json."
 )
 
 
@@ -79,29 +78,34 @@ def _effective_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
 def render_status(cs: "ChatState", cfg: "Config") -> str:
     model, model_src = _effective_model(cs, cfg)
     mode, mode_src = _effective_mode(cs, cfg)
-    session = "active (resumes next turn)" if cs.has_session else "fresh (next turn starts new)"
+    session = "активна (продолжение)" if cs.has_session else "чистая (новая сессия)"
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
     return (
-        "🟢 Antigravity Bridge — Status\n"
-        f"Model:      {model}  [{model_src}]\n"
-        f"Mode:       {mode}  [{mode_src}]\n"
+        "🟢 Статус моста Antigravity\n"
+        f"Модель:     {model}  [{model_src}]\n"
+        f"Режим:      {mode}  [{mode_src}]\n" \
+        f"Effort:     {cs.effort or 'default'}\n" \
+        f"Таймаут:    {cs.print_timeout or '15m'}\n"
         "\n"
-        "This chat:\n"
-        f"  Session:  {session}\n"
-        f"  Turns:    {cs.turn_count}\n"
-        f"  Workdir:  {workdir}"
+        "Этот чат:\n"
+        f"  Сессия:   {session}\n"
+        f"  Ходов:    {cs.turn_count}\n"
+        f"  Папка:    {workdir}"
     )
 
 
 def _settings_keyboard() -> InlineKeyboard:
     return [
         [
-            {"text": "🤖 Change model", "callback_data": "nav:model"},
-            {"text": "🛡 Change mode", "callback_data": "nav:mode"},
+            {"text": "🤖 Сменить модель", "callback_data": "nav:model"},
+            {"text": "🛡 Сменить режим", "callback_data": "nav:mode"},
         ],
-        [{"text": "🧹 Reset session", "callback_data": "R"}],
-        [{"text": "🔄 Refresh", "callback_data": "nav:settings"}],
+        [
+            {"text": "⚙️ Изменить Effort", "callback_data": "nav:effort"},
+        ],
+        [{"text": "🧹 Сбросить сессию", "callback_data": "R"}],
+        [{"text": "🔄 Обновить", "callback_data": "nav:settings"}],
     ]
 
 
@@ -112,9 +116,9 @@ def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
         rows.append([{"text": marker + m, "callback_data": f"m:{m}"}])
     default_marker = "● " if not current_per_chat else "○ "
     rows.append([
-        {"text": default_marker + "Use config default", "callback_data": f"m:{_DEFAULT_TOKEN}"}
+        {"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"m:{_DEFAULT_TOKEN}"}
     ])
-    rows.append([{"text": "← Back to settings", "callback_data": "nav:settings"}])
+    rows.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
     return rows
 
 
@@ -126,14 +130,33 @@ def _mode_keyboard(current_per_chat: str) -> InlineKeyboard:
     default_marker = "● " if not current_per_chat else "○ "
     return [
         cells,
-        [{"text": default_marker + "Use config default", "callback_data": f"M:{_DEFAULT_TOKEN}"}],
-        [{"text": "← Back to settings", "callback_data": "nav:settings"}],
+        [{"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"M:{_DEFAULT_TOKEN}"}],
+        [{"text": "← Назад к настройкам", "callback_data": "nav:settings"}],
     ]
 
 
 def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(text=render_status(cs, cfg), keyboard=_settings_keyboard())
 
+
+
+def _effort_keyboard(current_per_chat: str) -> InlineKeyboard:
+    rows: InlineKeyboard = []
+    for e in EFFORT_CHOICES:
+        marker = "● " if e == current_per_chat else "○ "
+        rows.append([{"text": marker + e, "callback_data": f"e:{e}"}])
+    default_marker = "● " if not current_per_chat else "○ "
+    rows.append([
+        {"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"e:{_DEFAULT_TOKEN}"}
+    ])
+    rows.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
+    return rows
+
+def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
+    return BridgeReply(
+        text=f"⚙️ Выберите effort для этого чата\n\nТекущий: {cs.effort or 'default'}",
+        keyboard=_effort_keyboard(cs.effort),
+    )
 
 def _render_model_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     cur, src = _effective_model(cs, cfg)
@@ -162,6 +185,8 @@ async def handle_text_command(
         return None
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower()
+    if "@" in cmd:
+        cmd = cmd.split("@", 1)[0]
     args = parts[1] if len(parts) > 1 else ""
 
     if cmd == "/start":
@@ -172,49 +197,59 @@ async def handle_text_command(
         return BridgeReply(render_status(cs, cfg))
     if cmd == "/settings":
         return _render_settings(cs, cfg)
+    if cmd == "/effort":
+        if args:
+            cs.effort = args
+            return BridgeReply(f"⚙️ Effort установлен на {args}")
+        return BridgeReply("⚙️ Используйте: /effort low | medium | high")
+    if cmd == "/timeout":
+        if args:
+            cs.print_timeout = args
+            return BridgeReply(f"⏱️ Таймаут установлен на {args}")
+        return BridgeReply("⏱️ Используйте: /timeout <время> (например: 30m, 1h, 5m)")
     if cmd == "/model":
         if args:
             if is_valid_model(args):
                 cs.model = args
-                return BridgeReply(f"🤖 Model set to {args}")
-            return BridgeReply(f"⚠️ Unsupported model: {args}")
+                return BridgeReply(f"🤖 Модель изменена на {args}")
+            return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}")
         return _render_model_picker(cs, cfg)
     if cmd == "/mode":
         if args:
             if args in {"code", "plan"}:
                 cs.mode = args
-                return BridgeReply(f"🛡 Mode set to {args}")
-            return BridgeReply(f"⚠️ Unsupported mode: {args}")
+                return BridgeReply(f"🛡 Режим изменен на {args}")
+            return BridgeReply(f"⚠️ Неподдерживаемый режим: {args}")
         return _render_mode_picker(cs, cfg)
     if cmd == "/reset":
         cs.has_session = False
-        return BridgeReply("🧹 Session reset. The next message starts fresh.")
+        return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет чистую сессию.")
     if cmd == "/thinking":
         mode = args.strip().lower()
         if mode in ("on", "true", "1"):
-            return BridgeReply("💭 Thinking visibility is not available in agy print mode.")
+            return BridgeReply("💭 Отображение процесса мышления недоступно в этом режиме.")
         if mode in ("off", "false", "0"):
-            return BridgeReply("💭 agy print mode already suppresses thinking streams.")
-        return BridgeReply("💭 agy print mode does not expose thinking streams.")
+            return BridgeReply("💭 Процесс мышления уже скрыт.")
+        return BridgeReply("💭 Процесс мышления не поддерживается.")
     if cmd == "/compact":
-        return BridgeReply("🗜️ Context compaction is not supported by agy print mode.")
+        return BridgeReply("🗜️ Сжатие контекста недоступно.")
     if cmd == "/image":
         mode = args.strip().lower()
         if mode in ("on", "true", "1"):
             cs.photo_enabled = True  # type: ignore[attr-defined]
-            return BridgeReply("📸 Photo processing: ON")
+            return BridgeReply("📸 Обработка фото: ВКЛ")
         if mode in ("off", "false", "0"):
             cs.photo_enabled = False  # type: ignore[attr-defined]
-            return BridgeReply("📸 Photo processing: OFF")
-        return BridgeReply("📸 Photo processing toggle not available in this build.")
+            return BridgeReply("📸 Обработка фото: ВЫКЛ")
+        return BridgeReply("📸 Переключение обработки фото недоступно.")
     if cmd == "/files":
         wd = cfg.agy.default_workdir if hasattr(cfg.agy, "default_workdir") else ""
         files = list_inbox(wd)
         if not files:
-            return BridgeReply("📂 Inbox empty.")
-        return BridgeReply("📂 Recent uploads:\n" + "\n".join(f"• {f}" for f in files))
+            return BridgeReply("📂 Папка пуста.")
+        return BridgeReply("📂 Недавние файлы:\n" + "\n".join(f"• {f}" for f in files))
     if cmd == "/queue":
-        return BridgeReply("📋 Queue status is available via daemon internals.")
+        return BridgeReply("📋 Статус очереди доступен в логах сервера.")
     return None
 
 
@@ -234,21 +269,37 @@ def handle_callback(
         return _render_model_picker(cs, cfg)
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
+    if data == "nav:effort":
+        return _render_effort_picker(cs, cfg)
     if data == "R":
         cs.has_session = False
         rep = _render_settings(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Session reset")
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Сессия сброшена")
 
     if data.startswith("m:"):
         choice = data[2:]
         if choice == _DEFAULT_TOKEN:
             cs.model = ""
-            toast = "Using config default"
+            toast = "Настройки по умолчанию"
         elif choice in MODEL_CHOICES:
             cs.model = choice
             toast = f"Model: {choice}"
         else:
-            toast = "Unknown choice"
+            toast = "Неизвестный выбор"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+
+    if data.startswith("e:"):
+        choice = data[2:]
+        if choice == _DEFAULT_TOKEN:
+            cs.effort = ""
+            toast = "Настройки по умолчанию"
+        elif choice in EFFORT_CHOICES:
+            cs.effort = choice
+            toast = f"Effort: {choice}"
+        else:
+            toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
 
@@ -257,12 +308,12 @@ def handle_callback(
         valid_modes = {v for v, _ in MODE_CHOICES}
         if choice == _DEFAULT_TOKEN:
             cs.mode = ""
-            toast = "Using config default"
+            toast = "Настройки по умолчанию"
         elif choice in valid_modes:
             cs.mode = choice
             toast = f"Mode: {choice}"
         else:
-            toast = "Unknown choice"
+            toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
 

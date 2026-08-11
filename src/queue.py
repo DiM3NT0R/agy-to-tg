@@ -51,10 +51,10 @@ class TurnQueue:
             if self._already_queued(cid):
                 return None  # replace previous
             if len(self.pending) >= MAX_QUEUE_DEPTH:
-                return "🚫 Queue full. Try again shortly."
+                return "🚫 Очередь переполнена. Попробуйте чуть позже."
             fut: asyncio.Future[str | None] = asyncio.Future()
             self.pending.append((cid, msg, fut))
-            return f"⏳ Queued (position #{len(self.pending)}). Processing soon…"
+            return f"⏳ В очереди (позиция #{len(self.pending)}). Скоро начнется обработка…"
 
         # Not active — proceed
         self.active = True

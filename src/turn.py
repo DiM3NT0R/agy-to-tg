@@ -19,22 +19,24 @@ AGY_TIMEOUT_S = 900.0
 
 
 async def execute_agy(
-    tg: "_TelegramLike", chat_id: int, msg: "InboundMessage",
+    tg: "_TelegramLike", chat_id: int, prompt: str, msg: "InboundMessage",
     cs: "ChatState", cfg: "Config", agy_path: str,
 ) -> tuple[str, int]:
     """Run one agy turn with typing heartbeat."""
     hb_stop = asyncio.Event()
-    hb_task = asyncio.create_task(_heartbeat(tg, chat_id, hb_stop))
+    hb_task = asyncio.create_task(_heartbeat(tg, chat_id, msg.message_thread_id, hb_stop))
     turn_start = time.perf_counter()
     try:
         result = await run_agy(
-            prompt=msg.text,
+            prompt=prompt,
             chat_dir=cs.chat_dir,
             has_session=cs.has_session,
             model=cs.model or cfg.agy.model,
             mode=cs.mode or cfg.agy.mode,
             agy_path=agy_path,
             timeout=AGY_TIMEOUT_S,
+            effort=cs.effort,
+            print_timeout=cs.print_timeout or "15m",
         )
     finally:
         hb_stop.set()
@@ -50,13 +52,13 @@ async def execute_agy(
 
 
 async def _heartbeat(
-    tg: "_TelegramLike", chat_id: int, stop_event: asyncio.Event
+    tg: "_TelegramLike", chat_id: int, message_thread_id: int | None, stop_event: asyncio.Event
 ) -> None:
     """Typing indicator refresh every 4 s."""
     try:
         while not stop_event.is_set():
             try:
-                await tg.send_chat_action(chat_id, "typing")
+                await tg.send_chat_action(chat_id, "typing", message_thread_id=message_thread_id)
             except Exception:
                 pass
             try:
