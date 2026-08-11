@@ -52,10 +52,7 @@ def _build_args(
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
 
-    if False:
-        pass
-    else:
-        args = [agy_path, "-p", prompt]
+    args = [agy_path, "-p", prompt]
 
     if has_session:
         args.append("--continue")
