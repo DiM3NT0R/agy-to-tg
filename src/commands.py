@@ -103,6 +103,7 @@ def _settings_keyboard() -> InlineKeyboard:
         ],
         [
             {"text": "⚙️ Изменить Effort", "callback_data": "nav:effort"},
+            {"text": "📁 Диалоги", "callback_data": "nav:projects"},
         ],
         [{"text": "🧹 Сбросить сессию", "callback_data": "R"}],
         [{"text": "🔄 Обновить", "callback_data": "nav:settings"}],
@@ -156,6 +157,22 @@ def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(
         text=f"⚙️ Выберите effort для этого чата\n\nТекущий: {cs.effort or 'default'}",
         keyboard=_effort_keyboard(cs.effort),
+    )
+
+def _render_projects_picker(cs: "ChatState") -> BridgeReply:
+    rows: InlineKeyboard = []
+    if not cs.projects:
+        rows.append([{"text": "Нет сохраненных диалогов", "callback_data": "nav:settings"}])
+    for p in cs.projects:
+        marker = "● " if p.get("id") == cs.conversation_id else "○ "
+        text = marker + p.get("snippet", "")
+        if len(text) > 40:
+            text = text[:37] + "..."
+        rows.append([{"text": text, "callback_data": f"P:{p.get('id')}"}])
+    rows.append([{"text": "⬅️ Назад", "callback_data": "nav:settings"}])
+    return BridgeReply(
+        text="📁 **Выбор сессии:**\n\nВыберите предыдущий диалог для продолжения:",
+        keyboard=rows,
     )
 
 def _render_model_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
@@ -271,10 +288,20 @@ def handle_callback(
         return _render_mode_picker(cs, cfg)
     if data == "nav:effort":
         return _render_effort_picker(cs, cfg)
+    if data == "nav:projects":
+        return _render_projects_picker(cs)
     if data == "R":
         cs.has_session = False
+        cs.conversation_id = ""
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Сессия сброшена")
+        
+    if data.startswith("P:"):
+        choice = data[2:]
+        cs.conversation_id = choice
+        cs.has_session = True
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Диалог выбран")
 
     if data.startswith("m:"):
         choice = data[2:]
