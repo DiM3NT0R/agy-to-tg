@@ -173,7 +173,7 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT conversation_id, preview, title, workspace_uris FROM conversation_summaries "
+                    "SELECT conversation_id, preview, title, workspace_uris, last_modified_time FROM conversation_summaries "
                     f"ORDER BY last_modified_time DESC LIMIT 11 OFFSET {offset}"
                 )
                 results = cursor.fetchall()
@@ -181,11 +181,23 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
                     has_more = True
                     results = results[:10]
                 for row in results:
-                    cid, preview, title, wsuris = row
-                    name = preview if preview else (title if title else cid)
-                    if wsuris:
-                        ws_short = wsuris.split(",")[-1].split("/")[-1]
-                        name = f"[{ws_short}] {name}"
+                    cid, preview, title, wsuris, mod_time = row
+                    
+                    # Parse timestamp (e.g., "2026-08-11 18:10:51.853...")
+                    date_str = ""
+                    if mod_time and len(mod_time) >= 16:
+                        date_str = f"{mod_time[8:10]}.{mod_time[5:7]} {mod_time[11:16]}"
+                    
+                    if title and preview and title != preview:
+                        name_core = f"{title}: {preview}"
+                    elif title:
+                        name_core = title
+                    elif preview:
+                        name_core = preview
+                    else:
+                        name_core = cid
+                    
+                    name = f"[{date_str}] {name_core}" if date_str else name_core
                     projects.append({"id": cid, "snippet": name})
         except Exception:
             pass
