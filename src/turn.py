@@ -24,12 +24,24 @@ class StatusUpdater:
         self.chat_id = chat_id
         self.message_id = message_id
         self.last_update = 0.0
-        self.current_text = ""
+        self.current_text = "Инициализация..."
         self.pending_task = None
         self.closed = False
+        self.start_time = time.time()
+        self.spinner = ["🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚"]
+        self.tick = 0
+        self.ticker_task = asyncio.create_task(self._ticker())
+
+    async def _ticker(self):
+        while not self.closed:
+            await asyncio.sleep(5.0)
+            if self.closed:
+                break
+            if self.current_text:
+                await self._edit(self.current_text)
 
     async def update(self, new_text: str):
-        if self.closed or new_text == self.current_text:
+        if self.closed:
             return
         self.current_text = new_text
         now = time.time()
@@ -49,7 +61,13 @@ class StatusUpdater:
 
     async def _edit(self, text: str):
         try:
-            await self.tg.edit_message_text(self.chat_id, self.message_id, text)
+            self.tick += 1
+            spin = self.spinner[self.tick % len(self.spinner)]
+            elapsed = int(time.time() - self.start_time)
+            m = elapsed // 60
+            s = elapsed % 60
+            display_text = f"{spin} [{m:02d}:{s:02d}] {text}"
+            await self.tg.edit_message_text(self.chat_id, self.message_id, display_text)
         except Exception:
             pass
 
@@ -57,6 +75,8 @@ class StatusUpdater:
         self.closed = True
         if self.pending_task:
             self.pending_task.cancel()
+        if hasattr(self, 'ticker_task') and self.ticker_task:
+            self.ticker_task.cancel()
 
 
 async def execute_agy(
@@ -85,7 +105,25 @@ async def execute_agy(
             state = su.get("state")
             if stype == "tool" and state == "ACTIVE":
                 tool = su.get("tool_name", "unknown")
-                await updater.update(f"🛠 Выполняю: {tool}...")
+                info = su.get("tool_info", {}).get("parameters", {})
+                extra = ""
+                if tool == "run_command" and "CommandLine" in info:
+                    cmd = info["CommandLine"].strip().split("\n")[0]
+                    extra = f": {cmd}"
+                elif "TargetFile" in info:
+                    file_name = info["TargetFile"].split("/")[-1]
+                    extra = f" ({file_name})"
+                elif "AbsolutePath" in info:
+                    file_name = info["AbsolutePath"].split("/")[-1]
+                    extra = f" ({file_name})"
+                elif "SearchPath" in info:
+                    file_name = info["SearchPath"].split("/")[-1]
+                    extra = f" ({file_name})"
+                
+                if len(extra) > 60:
+                    extra = extra[:57] + "..."
+                
+                await updater.update(f"🛠 Выполняю: {tool}{extra}")
             elif stype == "agent_response" and state == "ACTIVE":
                 await updater.update("💬 Формирую ответ...")
 
@@ -105,6 +143,8 @@ async def execute_agy(
             print_timeout=cs.print_timeout or "15m",
             on_event=handle_event if updater else None,
         )
+        if result.exit_code != 0:
+            LOG.error("agy exited with %d. stderr: %s", result.exit_code, result.stderr)
     finally:
         hb_stop.set()
         hb_task.cancel()

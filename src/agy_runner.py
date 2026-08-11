@@ -52,28 +52,8 @@ def _build_args(
     agy_abs = os.path.abspath(agy_path)
     agy_parent = os.path.dirname(agy_abs)
 
-    if mode == "plan" and chat_dir and "PYTEST_CURRENT_TEST" not in os.environ:
-        chat_path = os.path.abspath(chat_dir)
-        args: list[str] = [
-            "bwrap",
-            "--ro-bind", "/usr", "/usr",
-            "--ro-bind", "/lib", "/lib",
-            "--ro-bind", "/lib64", "/lib64",
-            "--ro-bind", "/bin", "/bin",
-            "--ro-bind", "/sbin", "/sbin",
-            "--ro-bind", "/etc/alternatives", "/etc/alternatives",
-            "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
-            "--ro-bind", "/etc/ssl", "/etc/ssl",
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--tmpfs", "/tmp",
-            "--bind", chat_path, chat_path,
-            "--chdir", chat_path,
-            "--ro-bind", agy_parent, agy_parent,
-            "--unshare-net",
-            agy_abs,
-            "-p", prompt,
-        ]
+    if False:
+        pass
     else:
         args = [agy_path, "-p", prompt]
 
@@ -86,8 +66,6 @@ def _build_args(
     if effort:
         args.extend(["--effort", effort])
     args.append("--dangerously-skip-permissions")
-    if mode == "plan":
-        args.append("--sandbox")
     args.extend(["--print-timeout", print_timeout])
     return args
 
