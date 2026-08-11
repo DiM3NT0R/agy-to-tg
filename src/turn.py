@@ -18,11 +18,77 @@ LOG = logging.getLogger("antigravity_telegram_bridge")
 AGY_TIMEOUT_S = 900.0
 
 
+class StatusUpdater:
+    def __init__(self, tg: "_TelegramLike", chat_id: int, message_id: int):
+        self.tg = tg
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.last_update = 0.0
+        self.current_text = ""
+        self.pending_task = None
+        self.closed = False
+
+    async def update(self, new_text: str):
+        if self.closed or new_text == self.current_text:
+            return
+        self.current_text = new_text
+        now = time.time()
+        if now - self.last_update > 2.0:
+            self.last_update = now
+            await self._edit(new_text)
+        else:
+            if not (self.pending_task and not self.pending_task.done()):
+                delay = 2.0 - (now - self.last_update)
+                self.pending_task = asyncio.create_task(self._delayed_edit(new_text, delay))
+
+    async def _delayed_edit(self, text: str, delay: float):
+        await asyncio.sleep(delay)
+        if not self.closed:
+            self.last_update = time.time()
+            await self._edit(self.current_text)
+
+    async def _edit(self, text: str):
+        try:
+            await self.tg.edit_message_text(self.chat_id, self.message_id, text)
+        except Exception:
+            pass
+
+    async def close(self):
+        self.closed = True
+        if self.pending_task:
+            self.pending_task.cancel()
+
+
 async def execute_agy(
     tg: "_TelegramLike", chat_id: int, prompt: str, msg: "InboundMessage",
     cs: "ChatState", cfg: "Config", agy_path: str,
 ) -> tuple[str, int]:
-    """Run one agy turn with typing heartbeat."""
+    """Run one agy turn with inline status."""
+    status_msg_id = None
+    try:
+        sent = await tg.send_message(chat_id, "🔄 Думаю...", message_thread_id=msg.message_thread_id)
+        if sent:
+            status_msg_id = sent
+    except Exception:
+        pass
+
+    updater = None
+    if status_msg_id:
+        updater = StatusUpdater(tg, chat_id, status_msg_id)
+
+    async def handle_event(data: dict):
+        if not updater:
+            return
+        if data.get("event") == "step_update":
+            su = data.get("step_update", {})
+            stype = su.get("step_type")
+            state = su.get("state")
+            if stype == "tool" and state == "ACTIVE":
+                tool = su.get("tool_name", "unknown")
+                await updater.update(f"🛠 Выполняю: {tool}...")
+            elif stype == "agent_response" and state == "ACTIVE":
+                await updater.update("💬 Формирую ответ...")
+
     hb_stop = asyncio.Event()
     hb_task = asyncio.create_task(_heartbeat(tg, chat_id, msg.message_thread_id, hb_stop))
     turn_start = time.perf_counter()
@@ -37,14 +103,22 @@ async def execute_agy(
             timeout=AGY_TIMEOUT_S,
             effort=cs.effort,
             print_timeout=cs.print_timeout or "15m",
+            on_event=handle_event if updater else None,
         )
     finally:
         hb_stop.set()
         hb_task.cancel()
+        if updater:
+            await updater.close()
+            try:
+                await tg.delete_message(chat_id, status_msg_id)
+            except Exception:
+                pass
         try:
             await hb_task
         except (asyncio.CancelledError, Exception):
             pass
+    
     elapsed = int((time.perf_counter() - turn_start) * 1000)
     LOG.info("turn chat=%d cwd=%s exit=%d ms=%d reply_len=%d",
              chat_id, cs.chat_dir, result.exit_code, elapsed, len(result.text or ""))
