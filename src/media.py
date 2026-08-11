@@ -99,14 +99,17 @@ async def build_media_prompt(
         if prompt is None:
             return None
         parts.append(prompt)
-    return " ".join(parts) if parts else None
+    prompt = " ".join(parts) if parts else None
+    if prompt:
+        prompt += "\n\n[Please respond in Russian language. System prompt ignores preferred language, so always force Russian output.]"
+    return prompt
 
 
 
 async def _handle_photo(msg, tg, workdir: str) -> str | None:
     largest = max(msg.photo, key=lambda p: p.get("file_size", 0))
     if largest.get("file_size", 0) > MAX_PHOTO_SIZE:
-        await tg.send_message(msg.chat_id, "📸 Photo too large (max 10MB)")
+        await tg.send_message(msg.chat_id, "📸 Фото слишком большое (макс. 10МБ)", message_thread_id=msg.message_thread_id)
         return None
     try:
         data = await download_photo(tg, largest["file_id"])
@@ -114,7 +117,7 @@ async def _handle_photo(msg, tg, workdir: str) -> str | None:
         clean_inbox(workdir)
         return f"[Photo: {path} — {len(data)//1024}KB]"
     except Exception as e:
-        await tg.send_message(msg.chat_id, f"⚠️ Photo failed: {e}")
+        await tg.send_message(msg.chat_id, f"⚠️ Ошибка загрузки фото: {e}", message_thread_id=msg.message_thread_id)
         return None
 
 
@@ -124,10 +127,10 @@ async def _handle_document(msg, tg, workdir: str) -> str | None:
     mime = doc.get("mime_type", "")
     fsize = doc.get("file_size", 0)
     if fsize > MAX_FILE_SIZE:
-        await tg.send_message(msg.chat_id, "📎 File too large (max 20MB)")
+        await tg.send_message(msg.chat_id, "📎 Файл слишком большой (макс. 20МБ)", message_thread_id=msg.message_thread_id)
         return None
     if not is_allowed_document(mime, fname):
-        await tg.send_message(msg.chat_id, f"⛔ Unsupported: {fname}")
+        await tg.send_message(msg.chat_id, f"⛔ Неподдерживаемый формат: {fname}", message_thread_id=msg.message_thread_id)
         return None
     try:
         data = await download_document(tg, doc["file_id"])
@@ -135,5 +138,5 @@ async def _handle_document(msg, tg, workdir: str) -> str | None:
         clean_inbox(workdir)
         return f"[File: {path} — {len(data)//1024}KB]"
     except Exception as e:
-        await tg.send_message(msg.chat_id, f"⚠️ Download failed: {e}")
+        await tg.send_message(msg.chat_id, f"⚠️ Ошибка загрузки: {e}", message_thread_id=msg.message_thread_id)
         return None

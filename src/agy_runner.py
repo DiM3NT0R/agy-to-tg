@@ -46,6 +46,7 @@ def _build_args(
     model: str,
     mode: str,
     print_timeout: str,
+    effort: str = "",
     chat_dir: str = "",
 ) -> list[str]:
     agy_abs = os.path.abspath(agy_path)
@@ -82,6 +83,8 @@ def _build_args(
         args.append("--new-project")
     if model:
         args.extend(["--model", model])
+    if effort:
+        args.extend(["--effort", effort])
     args.append("--dangerously-skip-permissions")
     if mode == "plan":
         args.append("--sandbox")
@@ -148,6 +151,7 @@ async def run_agy(
     agy_path: str,
     timeout: float | None = None,
     print_timeout: str = "15m",
+    effort: str = "",
 ) -> AgyResult:
     """Run agy in print mode. Returns when the turn ends."""
     args = _build_args(
@@ -157,6 +161,7 @@ async def run_agy(
         model=model,
         mode=mode,
         print_timeout=print_timeout,
+        effort=effort,
         chat_dir=chat_dir,
     )
     return await asyncio.to_thread(_run_sync, args, chat_dir, timeout)

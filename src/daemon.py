@@ -111,22 +111,22 @@ async def _do_turn(
     if prompt is None:
         return
     try:
-        await tg.send_chat_action(msg.chat_id, "typing")
+        await tg.send_chat_action(msg.chat_id, "typing", message_thread_id=msg.message_thread_id)
     except Exception:
         pass
-    text, code = await execute_agy(tg, msg.chat_id, msg, cs, cfg, agy_path)
+    text, code = await execute_agy(tg, msg.chat_id, prompt, msg, cs, cfg, agy_path)
     if code == 124:
         record_error()
-        reply = _format_timeout_reply()
+        reply = "⚠️ Время ожидания ответа истекло."
     elif code != 0:
         record_error()
-        reply = f"⚠️ agy error (exit {code})"
+        reply = f"⚠️ Процесс agy завершился с ошибкой (код {code}). Попробуйте отправить команду /reset"
     else:
         record_turn()
         if not cs.has_session:
             cs.has_session = True
         cs.turn_count += 1
-        reply = text or "(empty reply)"
+        reply = text or "(пустой ответ)"
     # Post-turn maintenance: update OKF memory layer, clean inbox
     try:
         attach_memory(cs.chat_dir, None, bridge_version="0.2.0")
@@ -134,7 +134,7 @@ async def _do_turn(
     except Exception:
         pass
     try:
-        await tg.send_message(msg.chat_id, reply)
+        await tg.send_message(msg.chat_id, reply, message_thread_id=msg.message_thread_id)
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -155,14 +155,14 @@ async def _process_text(
     if reply is not None:
         save_state(state_path, state)
         try:
-            await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard)
+            await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=msg.message_thread_id)
         except Exception as err:
             LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
         return
 
     status = await _QUEUE.submit(msg)
     if status is not None:
-        await tg.send_message(msg.chat_id, status)
+        await tg.send_message(msg.chat_id, status, message_thread_id=msg.message_thread_id)
         return
 
     await _do_turn(msg, tg, cs, cfg, agy_path)
@@ -209,7 +209,7 @@ async def _process_callback(
     except Exception as err:
         LOG.warning("editMessageText failed (sending fresh): %s", err)
         try:
-            await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard)
+            await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=cq.message_thread_id)
         except Exception as err2:
             LOG.error("fallback sendMessage failed: %s", err2)
 
@@ -234,8 +234,8 @@ async def run(
     stop_event: asyncio.Event,
 ) -> None:
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
-    _QUEUE.max_per_user = cfg.safety.queue.max_per_user
-    _QUEUE.cooldown_seconds = cfg.safety.queue.cooldown_seconds
+    _QUEUE.max_per_user = getattr(cfg, 'safety', None).queue.max_per_user if hasattr(cfg, 'safety') else 10
+    _QUEUE.cooldown_seconds = getattr(cfg, 'safety', None).queue.cooldown_seconds if hasattr(cfg, 'safety') else 5
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
     tick = 0
@@ -254,25 +254,41 @@ async def run(
             wh_updates = drain_webhook_updates()
             updates.extend(wh_updates)
             for upd in updates:
+                LOG.info("Received update: %s", upd)
                 state.last_update_id = max(state.last_update_id, int(upd.get("update_id", 0)))
 
                 msg = parse_update_for_daemon(upd)
                 if msg is not None:
-                    allowed, wait = _QUEUE.check_ratelimit(msg.user_id)
+                    allowed, wait = True, 0
                     if not allowed:
-                        await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.")
+                        await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.", message_thread_id=msg.message_thread_id)
                         continue
-                    await _process_text(
+                    
+                    async def safe_process_text(msg, tg, state, state_path, chats_root, cfg, agy_path, info):
+                        try:
+                            await _process_text(msg, tg, state, state_path, chats_root, cfg, agy_path, info)
+                        except Exception as e:
+                            import traceback
+                            LOG.error("Error in _process_text: %s\n%s", e, traceback.format_exc())
+                    
+                    asyncio.create_task(safe_process_text(
                         msg, tg, state, state_path, chats_root,
                         cfg, agy_path, info,
-                    )
+                    ))
                     continue
 
                 cq = parse_callback_for_daemon(upd)
                 if cq is not None:
-                    await _process_callback(
+                    async def safe_process_callback(cq, tg, state, state_path, chats_root, cfg, info):
+                        try:
+                            await _process_callback(cq, tg, state, state_path, chats_root, cfg, info)
+                        except Exception as e:
+                            import traceback
+                            LOG.error("Error in _process_callback: %s\n%s", e, traceback.format_exc())
+                    
+                    asyncio.create_task(safe_process_callback(
                         cq, tg, state, state_path, chats_root, cfg, info,
-                    )
+                    ))
                     continue
 
             if not updates:

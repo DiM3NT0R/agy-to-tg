@@ -13,6 +13,7 @@ class InboundMessage:
     chat_id: int
     user_id: int
     text: str
+    message_thread_id: int | None = None
     photo: list[dict[str, Any]] | None = None
     document: dict[str, Any] | None = None
 
@@ -25,6 +26,7 @@ class CallbackQuery:
     user_id: int
     message_id: int
     data: str
+    message_thread_id: int | None = None
 
 
 # Telegram inline keyboards are nested lists of dicts: list[list[Button]].
@@ -45,6 +47,7 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     cid = chat.get("id")
     uid = sender.get("id")
     uid_n = update.get("update_id")
+    thread_id = msg.get("message_thread_id")
     if not isinstance(cid, int) or not isinstance(uid, int) or not isinstance(uid_n, int):
         return None
     return InboundMessage(
@@ -52,6 +55,7 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
         chat_id=cid,
         user_id=uid,
         text=text,
+        message_thread_id=thread_id if isinstance(thread_id, int) else None,
         photo=list(photo) if isinstance(photo, list) else None,
         document=doc if isinstance(doc, dict) else None,
     )
@@ -67,6 +71,7 @@ def parse_callback_query(update: dict[str, Any]) -> CallbackQuery | None:
     inner_msg = cq.get("message") or {}
     chat = inner_msg.get("chat") or {}
     chat_id = chat.get("id")
+    thread_id = inner_msg.get("message_thread_id")
     message_id = inner_msg.get("message_id")
     data = cq.get("data")
     update_id = update.get("update_id")
@@ -86,6 +91,7 @@ def parse_callback_query(update: dict[str, Any]) -> CallbackQuery | None:
         user_id=user_id,
         message_id=message_id,
         data=data,
+        message_thread_id=thread_id if isinstance(thread_id, int) else None,
     )
 
 
@@ -171,12 +177,15 @@ class TelegramClient:
         text: str,
         *,
         keyboard: InlineKeyboard | None = None,
+        message_thread_id: int | None = None,
     ) -> int | None:
         assert self._client is not None
         first_message_id: int | None = None
         chunks = chunk_message(text)
         for i, chunk in enumerate(chunks):
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if message_thread_id is not None:
+                payload["message_thread_id"] = message_thread_id
             if i == 0 and keyboard is not None:
                 payload["reply_markup"] = {"inline_keyboard": keyboard}
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)
@@ -231,11 +240,14 @@ class TelegramClient:
         if not data.get("ok"):
             return
 
-    async def send_chat_action(self, chat_id: int, action: str = "typing") -> None:
+    async def send_chat_action(self, chat_id: int, action: str = "typing", message_thread_id: int | None = None) -> None:
         assert self._client is not None
+        payload: dict[str, Any] = {"chat_id": chat_id, "action": action}
+        if message_thread_id is not None:
+            payload["message_thread_id"] = message_thread_id
         r = await self._client.post(
             f"{self._base}/sendChatAction",
-            json={"chat_id": chat_id, "action": action},
+            json=payload,
         )
         data = r.json()
         if not data.get("ok"):
