@@ -162,20 +162,25 @@ def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
 import sqlite3
 import os
 
-def _render_projects_picker(cs: "ChatState") -> BridgeReply:
+def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
     rows: InlineKeyboard = []
     
     db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
     projects = []
+    has_more = False
     if os.path.exists(db_path):
         try:
             with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT conversation_id, preview, title, workspace_uris FROM conversation_summaries "
-                    "ORDER BY last_modified_time DESC LIMIT 10"
+                    f"ORDER BY last_modified_time DESC LIMIT 11 OFFSET {offset}"
                 )
-                for row in cursor.fetchall():
+                results = cursor.fetchall()
+                if len(results) > 10:
+                    has_more = True
+                    results = results[:10]
+                for row in results:
                     cid, preview, title, wsuris = row
                     name = preview if preview else (title if title else cid)
                     if wsuris:
@@ -193,7 +198,15 @@ def _render_projects_picker(cs: "ChatState") -> BridgeReply:
         if len(text) > 40:
             text = text[:37] + "..."
         rows.append([{"text": text, "callback_data": f"P:{p.get('id')}"}])
-    rows.append([{"text": "⬅️ Назад", "callback_data": "nav:settings"}])
+        
+    nav_row = [{"text": "⬅️ Назад", "callback_data": "nav:settings"}]
+    if has_more:
+        nav_row.append({"text": "Ещё 10 ➡️", "callback_data": f"nav:projects:{offset + 10}"})
+    if offset > 0:
+        prev_offset = max(0, offset - 10)
+        nav_row.insert(1, {"text": "⬅️ Пред.", "callback_data": f"nav:projects:{prev_offset}"})
+        
+    rows.append(nav_row)
     return BridgeReply(
         text="📁 **Выбор сессии:**\n\nВыберите диалог со всего сервера:",
         keyboard=rows,
@@ -312,8 +325,10 @@ def handle_callback(
         return _render_mode_picker(cs, cfg)
     if data == "nav:effort":
         return _render_effort_picker(cs, cfg)
-    if data == "nav:projects":
-        return _render_projects_picker(cs)
+    if data == "nav:projects" or data.startswith("nav:projects:"):
+        parts = data.split(":")
+        offset = int(parts[2]) if len(parts) > 2 else 0
+        return _render_projects_picker(cs, offset)
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""
