@@ -159,11 +159,35 @@ def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
         keyboard=_effort_keyboard(cs.effort),
     )
 
+import sqlite3
+import os
+
 def _render_projects_picker(cs: "ChatState") -> BridgeReply:
     rows: InlineKeyboard = []
-    if not cs.projects:
+    
+    db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
+    projects = []
+    if os.path.exists(db_path):
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT conversation_id, preview, title, workspace_uris FROM conversation_summaries "
+                    "ORDER BY last_modified_time DESC LIMIT 10"
+                )
+                for row in cursor.fetchall():
+                    cid, preview, title, wsuris = row
+                    name = preview if preview else (title if title else cid)
+                    if wsuris:
+                        ws_short = wsuris.split(",")[-1].split("/")[-1]
+                        name = f"[{ws_short}] {name}"
+                    projects.append({"id": cid, "snippet": name})
+        except Exception:
+            pass
+
+    if not projects:
         rows.append([{"text": "Нет сохраненных диалогов", "callback_data": "nav:settings"}])
-    for p in cs.projects:
+    for p in projects:
         marker = "● " if p.get("id") == cs.conversation_id else "○ "
         text = marker + p.get("snippet", "")
         if len(text) > 40:
@@ -171,7 +195,7 @@ def _render_projects_picker(cs: "ChatState") -> BridgeReply:
         rows.append([{"text": text, "callback_data": f"P:{p.get('id')}"}])
     rows.append([{"text": "⬅️ Назад", "callback_data": "nav:settings"}])
     return BridgeReply(
-        text="📁 **Выбор сессии:**\n\nВыберите предыдущий диалог для продолжения:",
+        text="📁 **Выбор сессии:**\n\nВыберите диалог со всего сервера:",
         keyboard=rows,
     )
 
