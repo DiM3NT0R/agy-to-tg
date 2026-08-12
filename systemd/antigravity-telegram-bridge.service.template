@@ -14,16 +14,20 @@ Restart=on-failure
 RestartSec=5s
 
 # --- Hardening (mirrors kimi-telegram-bridge) ---
+# NOTE: RestrictAddressFamilies and RestrictSUIDSGID are intentionally
+# omitted. This bridge spawns `agy` with --dangerously-skip-permissions,
+# which is used for real sysadmin/network tasks (apt-get install, nmap
+# scans, etc.) — those need AF_PACKET and setuid binaries (ping, apt
+# postinst scripts) to keep working. Re-evaluate if the bridge's use case
+# narrows.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
 RestrictNamespaces=true
 RestrictRealtime=true
-RestrictSUIDSGID=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources

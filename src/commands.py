@@ -22,7 +22,7 @@ MODEL_CHOICES: tuple[str, ...] = ("gemini-3.6-flash-high", "gemini-3.6-flash-med
 EFFORT_CHOICES: tuple[str, ...] = ("low", "medium", "high")
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),
-    ("plan", "Plan (read-only sandbox)"),
+    ("plan", "Plan (no auto-execute)"),
 )
 _DEFAULT_TOKEN = "_DEFAULT"
 

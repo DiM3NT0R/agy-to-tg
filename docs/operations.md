@@ -112,7 +112,7 @@ Field-by-field:
 | `agy.chats_root` | optional | Per-chat dirs. Default: `~/.antigravity/bridge/chats`. |
 | `agy.default_workdir` | optional | Base cwd for `agy`. |
 | `agy.model` | optional | Empty = `agy` default. |
-| `agy.mode` | optional | `code` (auto) or `plan` (read-only sandbox). |
+| `agy.mode` | optional | `code` (auto-approve) or `plan` (agent is instructed to only plan, not execute — no OS-level sandbox is applied). |
 
 **Never commit `config.json`.** It is gitignored.
 

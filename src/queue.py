@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,13 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
 MAX_QUEUE_DEPTH = 5
+
+# Rate-limit defaults (sliding window + per-user cooldown). These apply to
+# non-owner users only — the owner (first entry in allowed_user_ids) always
+# bypasses both the turn queue and the rate limiter.
+DEFAULT_COOLDOWN_SECONDS = 5.0
+DEFAULT_MAX_PER_WINDOW = 10
+DEFAULT_WINDOW_SECONDS = 60.0
 
 
 @dataclass
@@ -24,6 +32,41 @@ class TurnQueue:
     active: bool = False
     pending: list[tuple[int, int, int | None, "InboundMessage", asyncio.Future[str | None]]] = field(default_factory=list)
     owner_chat_id: int = 0
+
+    # Rate limiting state (per user_id).
+    cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
+    max_per_window: int = DEFAULT_MAX_PER_WINDOW
+    window_seconds: float = DEFAULT_WINDOW_SECONDS
+    _last_request: dict[int, float] = field(default_factory=dict)
+    _window_events: dict[int, list[float]] = field(default_factory=dict)
+
+    def check_rate_limit(self, user_id: int) -> tuple[bool, float]:
+        """Sliding-window rate limiter with a minimum per-user cooldown.
+
+        Returns (allowed, wait_seconds). The owner always passes. On
+        success, records the request so subsequent calls see it.
+        """
+        if user_id == self.owner_chat_id:
+            return True, 0.0
+
+        now = time.monotonic()
+
+        last = self._last_request.get(user_id)
+        if last is not None:
+            elapsed = now - last
+            if elapsed < self.cooldown_seconds:
+                return False, round(self.cooldown_seconds - elapsed, 1)
+
+        events = self._window_events.setdefault(user_id, [])
+        cutoff = now - self.window_seconds
+        events[:] = [t for t in events if t > cutoff]
+        if len(events) >= self.max_per_window:
+            wait = round(self.window_seconds - (now - events[0]), 1)
+            return False, max(wait, 0.1)
+
+        self._last_request[user_id] = now
+        events.append(now)
+        return True, 0.0
 
     def _pos(self, chat_id: int, user_id: int, thread_id: int | None) -> int:
         for i, (cid, uid, tid, _, _) in enumerate(self.pending):

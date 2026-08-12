@@ -25,7 +25,8 @@ def _msg(text: str = "hi", user_id: int = 99999999, chat_id: int = 99999999) -> 
 def test_parse_update_extracts_text() -> None:
     msg = parse_update(_msg(text="hello kimi"))
     assert msg == InboundMessage(
-        update_id=100, chat_id=99999999, user_id=99999999, text="hello kimi"
+        update_id=100, chat_id=99999999, user_id=99999999, message_id=1,
+        text="hello kimi",
     )
 
 
@@ -59,22 +60,22 @@ def _cfg(user_ids: list[int], chat_ids: list[int] | None = None) -> TelegramConf
 
 
 def test_is_authorized_allows_listed_user() -> None:
-    msg = InboundMessage(update_id=1, chat_id=10, user_id=42, text="hi")
+    msg = InboundMessage(update_id=1, chat_id=10, user_id=42, message_id=1, text="hi")
     assert is_authorized(msg, _cfg([42])) is True
 
 
 def test_is_authorized_blocks_unlisted_user() -> None:
-    msg = InboundMessage(update_id=1, chat_id=10, user_id=999, text="hi")
+    msg = InboundMessage(update_id=1, chat_id=10, user_id=999, message_id=1, text="hi")
     assert is_authorized(msg, _cfg([42])) is False
 
 
 def test_is_authorized_with_chat_whitelist_blocks_other_chats() -> None:
-    msg = InboundMessage(update_id=1, chat_id=20, user_id=42, text="hi")
+    msg = InboundMessage(update_id=1, chat_id=20, user_id=42, message_id=1, text="hi")
     assert is_authorized(msg, _cfg([42], chat_ids=[10])) is False
 
 
 def test_is_authorized_with_chat_whitelist_allows_listed_chat() -> None:
-    msg = InboundMessage(update_id=1, chat_id=10, user_id=42, text="hi")
+    msg = InboundMessage(update_id=1, chat_id=10, user_id=42, message_id=1, text="hi")
     assert is_authorized(msg, _cfg([42], chat_ids=[10])) is True
 
 

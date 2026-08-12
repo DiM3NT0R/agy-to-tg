@@ -1,0 +1,16 @@
+/root/.antigravity/bridge/logs/bridge.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    # The bridge daemon receives its stdout/stderr via systemd's
+    # StandardOutput=append: redirect (not an application-level file
+    # handler), so it holds the fd open for the process lifetime. A normal
+    # rename+create rotation would leave it writing into the old
+    # (renamed) inode forever. copytruncate avoids that at the cost of a
+    # small window where a write can race the truncate.
+    copytruncate
+    create 600 root root
+}

@@ -88,7 +88,11 @@ async def test_run_agy_builds_argv(tmp_path: Path) -> None:
     assert "--continue" in args
     assert "--model" in args and "gemini-2.5-pro" in args
     assert "--dangerously-skip-permissions" in args
-    assert "--sandbox" in args
+    # NOTE: `plan` mode no longer wraps agy in a bwrap sandbox (removed
+    # because it hung under the daemon's asyncio subprocess pipes — see
+    # docs/design.md). It only changes the agent's instructions, so the
+    # argv is identical to `code` mode aside from prompt/session flags.
+    assert "--sandbox" not in args
     assert "--print-timeout" in args
 
 
@@ -154,7 +158,12 @@ async def test_run_agy_no_timeout_by_default(fake_agy: Path, tmp_path: Path) -> 
     assert result.text.strip() == "fake reply"
 
 
-def test_build_args_bubblewrap_sandbox(monkeypatch) -> None:
+def test_build_args_plan_mode_has_no_os_level_sandbox(monkeypatch) -> None:
+    """`plan` mode used to wrap agy in a bwrap sandbox; that was removed
+    (it hung under the daemon's asyncio subprocess pipes — see
+    docs/design.md). `plan` only changes the agent's own instructions, it
+    does not provide OS-level isolation. Guard against silently
+    reintroducing a broken/partial sandbox wrapper."""
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     from src.agy_runner import _build_args
 
@@ -168,8 +177,7 @@ def test_build_args_bubblewrap_sandbox(monkeypatch) -> None:
         chat_dir="/home/i/chat_workspace",
     )
 
-    assert args[0] == "bwrap"
-    assert "--unshare-net" in args
-    assert "/home/i/chat_workspace" in args
-    assert "/usr/bin/agy" in args
+    assert args[0] == "/usr/bin/agy"
+    assert "bwrap" not in args
+    assert "--sandbox" not in args
     assert "-p" in args and "run-security-scan" in args

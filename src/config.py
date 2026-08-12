@@ -28,7 +28,7 @@ class AgyConfig:
     chats_root: str = ""
     default_workdir: str = ""
     model: str = ""
-    mode: str = "code"  # "code" (auto) | "plan" (read-only sandbox)
+    mode: str = "code"  # "code" (auto) | "plan" (agent instructed not to auto-execute; no OS-level sandbox)
 
 
 @dataclass(frozen=True)

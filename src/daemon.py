@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -231,7 +232,9 @@ async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]
     except asyncio.TimeoutError:
         return []
     except Exception as err:
-        LOG.warning("getUpdates failed: %s", err)
+        # str(err) is empty for some httpx exceptions (e.g. bare
+        # ReadTimeout), so include the exception type for diagnosability.
+        LOG.warning("getUpdates failed: %s: %s", type(err).__name__, err)
         await asyncio.sleep(2)
         return []
 
@@ -242,8 +245,8 @@ async def run(
     stop_event: asyncio.Event,
 ) -> None:
     _QUEUE.owner_chat_id = cfg.telegram.allowed_user_ids[0] if cfg.telegram.allowed_user_ids else 0
-    _QUEUE.max_per_user = getattr(cfg, 'safety', None).queue.max_per_user if hasattr(cfg, 'safety') else 10
-    _QUEUE.cooldown_seconds = getattr(cfg, 'safety', None).queue.cooldown_seconds if hasattr(cfg, 'safety') else 5
+    # Rate limiter uses its built-in defaults (5s cooldown, 10 msgs/60s
+    # sliding window per non-owner user). See src/queue.py for tuning.
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
     tick = 0
@@ -267,9 +270,20 @@ async def run(
 
                 msg = parse_update_for_daemon(upd)
                 if msg is not None:
-                    allowed, wait = True, 0
+                    # Authorization is checked before rate limiting so that
+                    # unauthorized senders can't pollute the rate limiter's
+                    # per-user state (unbounded dict growth) or learn
+                    # anything about the bot from its replies.
+                    if not is_authorized(msg, cfg.telegram):
+                        LOG.info("drop unauth user=%s", msg.user_id)
+                        continue
+                    allowed, wait = _QUEUE.check_rate_limit(msg.user_id)
                     if not allowed:
-                        await tg.send_message(msg.chat_id, f"⏳ Rate limit. Wait {wait}s.", message_thread_id=msg.message_thread_id)
+                        await tg.send_message(
+                            msg.chat_id,
+                            f"⏳ Слишком много сообщений. Подождите {wait:.0f}с.",
+                            message_thread_id=msg.message_thread_id,
+                        )
                         continue
                     
                     async def safe_process_text(msg, tg, state, state_path, chats_root, cfg, agy_path, info):
@@ -370,7 +384,10 @@ def main() -> None:
             )
 
             if wh_url:
-                wh_secret = cfg.telegram.bot_token[:20]
+                # Random per-process secret, independent of the bot token.
+                # Re-registered with Telegram via setWebhook on every
+                # start, so no persistence is needed.
+                wh_secret = secrets.token_hex(32)
                 wh_res = await tg.set_webhook(wh_url, wh_secret)
                 LOG.info("webhook setup: %s", wh_res.get("description") if wh_res.get("ok") else wh_res)
                 wh_task = asyncio.create_task(start_webhook_server(wh_port, tg, wh_secret))

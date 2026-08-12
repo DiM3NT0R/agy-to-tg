@@ -51,6 +51,16 @@ echo "==> Reloading systemd --user and enabling unit"
 systemctl --user daemon-reload
 systemctl --user enable antigravity-telegram-bridge.service
 
+echo "==> Installing logrotate config for bridge.log"
+if [[ -w /etc/logrotate.d ]]; then
+    cp "${PLUGIN_DIR}/systemd/antigravity-telegram-bridge.logrotate" \
+        /etc/logrotate.d/antigravity-telegram-bridge
+else
+    echo "WARN: no write access to /etc/logrotate.d — copy" \
+        "${PLUGIN_DIR}/systemd/antigravity-telegram-bridge.logrotate" \
+        "there manually (as root) to enable log rotation" >&2
+fi
+
 if [[ ! -f "${PLUGIN_DIR}/config.json" ]]; then
     cat <<EOF
 

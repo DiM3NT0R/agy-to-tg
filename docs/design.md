@@ -39,10 +39,18 @@ A separate long-running Python process, run as `python -m src.daemon`, supervise
 5. Build `agy` argv:
    ```
    agy -p "<prompt>" --continue|--new-project [--model <model>]
-       --dangerously-skip-permissions [--sandbox]
+       --dangerously-skip-permissions
        --print-timeout 15m
    ```
    and spawn it with `cwd=chat_dir`.
+
+   Note: an earlier revision wrapped `plan` mode in a `bwrap` sandbox
+   (`--unshare-net`, read-only binds). It was removed because it caused
+   the process to hang under the daemon's asyncio subprocess pipes. `plan`
+   mode today only changes the prompt/instructions given to the agent
+   (asking it to plan without executing); it provides no OS-level
+   isolation. Treat `--dangerously-skip-permissions` as applying in both
+   modes.
 6. Capture plain-text stdout. On exit, send the reply to Telegram (chunked if >4096 chars).
 7. Persist `last_update_id` and `chats` map atomically.
 
@@ -142,7 +150,7 @@ Rationale for the split: `~/.gemini/extensions/antigravity-telegram-bridge/` is 
 - `allowed_user_ids`: at least one entry required (default-deny).
 - `allowed_chat_ids`: optional whitelist; if empty, any chat from an allowed user is accepted.
 - `agy.model`: empty string means inherit `agy`'s default.
-- `agy.mode`: `code` (auto-approve) or `plan` (read-only sandbox via `--sandbox`).
+- `agy.mode`: `code` (auto-approve) or `plan` (agent instructed to only plan; no OS-level sandbox — see note in "Build `agy` argv" above).
 
 The config file is read once at daemon start.
 
