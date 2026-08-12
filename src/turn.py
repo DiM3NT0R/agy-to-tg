@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 LOG = logging.getLogger("antigravity_telegram_bridge")
 AGY_TIMEOUT_S = 900.0
 
+ACTIVE_STOPS: dict[int, asyncio.Event] = {}
 
 class StatusUpdater:
     def __init__(self, tg: "_TelegramLike", chat_id: int, message_id: int):
@@ -67,7 +68,12 @@ class StatusUpdater:
             m = elapsed // 60
             s = elapsed % 60
             display_text = f"{spin} [{m:02d}:{s:02d}] {text}"
-            await self.tg.edit_message_text(self.chat_id, self.message_id, display_text)
+            await self.tg.edit_message_text(
+                self.chat_id, 
+                self.message_id, 
+                display_text,
+                keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{self.chat_id}"}]]
+            )
         except Exception:
             pass
 
@@ -86,7 +92,13 @@ async def execute_agy(
     """Run one agy turn with inline status."""
     status_msg_id = None
     try:
-        sent = await tg.send_message(chat_id, "🔄 Думаю...", message_thread_id=msg.message_thread_id)
+        sent = await tg.send_message(
+            chat_id, 
+            "🔄 Думаю...", 
+            keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{chat_id}"}]],
+            message_thread_id=msg.message_thread_id,
+            reply_to_message_id=msg.message_id if chat_id < 0 else None
+        )
         if sent:
             status_msg_id = sent
     except Exception:
@@ -101,6 +113,12 @@ async def execute_agy(
             cid = data.get("conversation_id")
             if cid:
                 cs.conversation_id = cid
+                # Add to projects if not exists
+                if not any(p.get("id") == cid for p in cs.projects):
+                    snippet = prompt[:40] + "..." if len(prompt) > 40 else prompt
+                    cs.projects.insert(0, {"id": cid, "snippet": snippet})
+                    # Keep max 10 projects
+                    cs.projects = cs.projects[:10]
         
         if not updater:
             return
@@ -134,6 +152,8 @@ async def execute_agy(
 
     hb_stop = asyncio.Event()
     hb_task = asyncio.create_task(_heartbeat(tg, chat_id, msg.message_thread_id, hb_stop))
+    stop_event = asyncio.Event()
+    ACTIVE_STOPS[chat_id] = stop_event
     turn_start = time.perf_counter()
     try:
         result = await run_agy(
@@ -148,10 +168,12 @@ async def execute_agy(
             print_timeout=cs.print_timeout or "15m",
             conversation_id=cs.conversation_id if cs.has_session else "",
             on_event=handle_event,
+            stop_event=stop_event,
         )
         if result.exit_code != 0:
             LOG.error("agy exited with %d. stderr: %s", result.exit_code, result.stderr)
     finally:
+        ACTIVE_STOPS.pop(chat_id, None)
         hb_stop.set()
         hb_task.cancel()
         if updater:

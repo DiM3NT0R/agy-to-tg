@@ -12,6 +12,7 @@ class InboundMessage:
     update_id: int
     chat_id: int
     user_id: int
+    message_id: int
     text: str
     message_thread_id: int | None = None
     photo: list[dict[str, Any]] | None = None
@@ -47,13 +48,15 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     cid = chat.get("id")
     uid = sender.get("id")
     uid_n = update.get("update_id")
+    mid = msg.get("message_id")
     thread_id = msg.get("message_thread_id")
-    if not isinstance(cid, int) or not isinstance(uid, int) or not isinstance(uid_n, int):
+    if not isinstance(cid, int) or not isinstance(uid, int) or not isinstance(uid_n, int) or not isinstance(mid, int):
         return None
     return InboundMessage(
         update_id=uid_n,
         chat_id=cid,
         user_id=uid,
+        message_id=mid,
         text=text,
         message_thread_id=thread_id if isinstance(thread_id, int) else None,
         photo=list(photo) if isinstance(photo, list) else None,
@@ -159,14 +162,6 @@ class TelegramClient:
             raise RuntimeError(f"telegram getMe failed: {data.get('description')}")
         return dict(data.get("result") or {})
 
-    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
-        assert self._client is not None
-        payload = {"commands": commands}
-        r = await self._client.post(f"{self._base}/setMyCommands", json=payload)
-        data = r.json()
-        if not data.get("ok"):
-            raise RuntimeError(f"setMyCommands failed: {data.get('description')}")
-
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]:
         assert self._client is not None
         r = await self._client.get(f"{self._base}/getUpdates", params={
@@ -186,6 +181,7 @@ class TelegramClient:
         *,
         keyboard: InlineKeyboard | None = None,
         message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
     ) -> int | None:
         assert self._client is not None
         first_message_id: int | None = None
@@ -194,6 +190,8 @@ class TelegramClient:
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
             if message_thread_id is not None:
                 payload["message_thread_id"] = message_thread_id
+            if reply_to_message_id is not None and i == 0:
+                payload["reply_to_message_id"] = reply_to_message_id
             if i == 0 and keyboard is not None:
                 payload["reply_markup"] = {"inline_keyboard": keyboard}
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)

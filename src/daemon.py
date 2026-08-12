@@ -119,6 +119,8 @@ async def _do_turn(
     if code == 124:
         record_error()
         reply = "⚠️ Время ожидания ответа истекло."
+    elif code == 130:
+        reply = text or "🛑 Выполнение остановлено."
     elif code != 0:
         record_error()
         reply = f"⚠️ Процесс agy завершился с ошибкой (код {code}). Попробуйте отправить команду /reset"
@@ -135,7 +137,12 @@ async def _do_turn(
     except Exception:
         pass
     try:
-        await tg.send_message(msg.chat_id, reply, message_thread_id=msg.message_thread_id)
+        await tg.send_message(
+            msg.chat_id, 
+            reply, 
+            message_thread_id=msg.message_thread_id,
+            reply_to_message_id=msg.message_id if msg.chat_id < 0 else None
+        )
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -188,7 +195,7 @@ async def _process_callback(
 ) -> None:
     if not is_authorized(
         InboundMessage(update_id=cq.update_id, chat_id=cq.chat_id,
-                       user_id=cq.user_id, text=""),
+                       user_id=cq.user_id, message_id=cq.message_id, text=""),
         cfg.telegram,
     ):
         LOG.info("drop unauth callback user=%s", cq.user_id)
@@ -350,20 +357,6 @@ def main() -> None:
 
         tg = TelegramClient(cfg.telegram.bot_token)
         try:
-            # Set bot commands for Telegram Menu button
-            bot_commands = [
-                {"command": "start", "description": "Настройки и меню сессий"},
-                {"command": "settings", "description": "Настройки"},
-                {"command": "reset", "description": "Сбросить текущую сессию"},
-                {"command": "image", "description": "Вкл/выкл анализ фото"},
-                {"command": "files", "description": "Файлы в рабочей директории"},
-                {"command": "queue", "description": "Очередь задач"},
-            ]
-            try:
-                await tg.set_my_commands(bot_commands)
-            except Exception as err:
-                LOG.warning("setMyCommands failed: %s", err)
-
             bot_username = await _detect_bot_username(cfg)
             info = DaemonInfo(
                 bot_username=bot_username,

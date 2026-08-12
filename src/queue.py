@@ -22,37 +22,17 @@ class TurnQueue:
     Owner (first in allowed_user_ids) always skips the queue.
     """
     active: bool = False
-    pending: list[tuple[int, "InboundMessage", asyncio.Future[str | None]]] = field(default_factory=list)
+    pending: list[tuple[int, int, int | None, "InboundMessage", asyncio.Future[str | None]]] = field(default_factory=list)
     owner_chat_id: int = 0
-    max_per_user: int = 10
-    cooldown_seconds: float = 0.0
-    _last_seen: dict[int, float] = field(default_factory=dict)
 
-    def check_ratelimit(self, user_id: int) -> tuple[bool, int]:
-        import time
-        if user_id == self.owner_chat_id:
-            return True, 0
-        now = time.time()
-        last = self._last_seen.get(user_id, 0.0)
-        wait = max(0, int(self.cooldown_seconds - (now - last)))
-        if wait > 0:
-            return False, wait
-        
-        user_pending = sum(1 for cid, _, _ in self.pending if cid == user_id)
-        if user_pending >= self.max_per_user:
-            return False, 60
-            
-        self._last_seen[user_id] = now
-        return True, 0
-
-    def _pos(self, chat_id: int) -> int:
-        for i, (cid, _, _) in enumerate(self.pending):
-            if cid == chat_id:
+    def _pos(self, chat_id: int, user_id: int, thread_id: int | None) -> int:
+        for i, (cid, uid, tid, _, _) in enumerate(self.pending):
+            if cid == chat_id and uid == user_id and tid == thread_id:
                 return i + 1
         return len(self.pending) + 1
 
-    def _already_queued(self, chat_id: int) -> bool:
-        return any(cid == chat_id for cid, _, _ in self.pending)
+    def _already_queued(self, chat_id: int, user_id: int, thread_id: int | None) -> bool:
+        return any(cid == chat_id and uid == user_id and tid == thread_id for cid, uid, tid, _, _ in self.pending)
 
     async def submit(self, msg: "InboundMessage") -> str | None:
         """Submit a message for processing. Returns queued status str or None to proceed.
@@ -61,19 +41,24 @@ class TurnQueue:
         Returns a str when the message was enqueued (status for user).
         """
         cid = msg.chat_id
+        uid = msg.user_id
+        tid = msg.message_thread_id
 
         # Owner bypass
-        if cid == self.owner_chat_id:
+        if msg.user_id == self.owner_chat_id:
             return None
 
         # Already active — enqueue
         if self.active:
-            if self._already_queued(cid):
-                return None  # replace previous
+            if self._already_queued(cid, uid, tid):
+                for i, (c, u, t, m, f) in enumerate(self.pending):
+                    if c == cid and u == uid and t == tid:
+                        self.pending[i] = (cid, uid, tid, msg, f)
+                        return f"⏳ Сообщение обновлено (очередь #{i+1})"
             if len(self.pending) >= MAX_QUEUE_DEPTH:
                 return "🚫 Очередь переполнена. Попробуйте чуть позже."
             fut: asyncio.Future[str | None] = asyncio.Future()
-            self.pending.append((cid, msg, fut))
+            self.pending.append((cid, uid, tid, msg, fut))
             return f"⏳ В очереди (позиция #{len(self.pending)}). Скоро начнется обработка…"
 
         # Not active — proceed
@@ -88,7 +73,7 @@ class TurnQueue:
         """Return next queued message or None."""
         if not self.pending:
             return None
-        _, msg, fut = self.pending.pop(0)
+        _, _, _, msg, fut = self.pending.pop(0)
         self.active = True
         return msg, fut
 
@@ -96,9 +81,9 @@ class TurnQueue:
         lines = [f"Active: {'yes' if self.active else 'no'}"]
         if self.pending:
             lines.append(f"Queue ({len(self.pending)}):")
-            for i, (cid, msg, _) in enumerate(self.pending):
+            for i, (cid, uid, tid, msg, _) in enumerate(self.pending):
                 preview = msg.text[:40] + ("…" if len(msg.text) > 40 else "")
-                lines.append(f"  #{i+1} chat={cid} \"{preview}\"")
+                lines.append(f"  #{i+1} chat={cid} user={uid} thread={tid} \"{preview}\"")
         else:
             lines.append("Queue: empty")
         return lines

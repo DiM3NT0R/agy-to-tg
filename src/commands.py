@@ -167,6 +167,7 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
     
     db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
     projects = []
+    seen_ids = set()
     has_more = False
     
     # 1. Fetch global from SQLite
@@ -203,7 +204,20 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
         except Exception:
             pass
 
-    projects = sqlite_projects
+    # 2. Inject local projects at the top if we are on the first page
+    if offset == 0:
+        for p in cs.projects:
+            pid = p.get("id")
+            if pid and pid not in seen_ids:
+                projects.append({"id": pid, "snippet": f"[Текущий чат] {p.get('snippet')}"})
+                seen_ids.add(pid)
+                
+    # 3. Add SQLite projects
+    for p in sqlite_projects:
+        pid = p.get("id")
+        if pid not in seen_ids:
+            projects.append(p)
+            seen_ids.add(pid)
             
     # Limit to 10 items for display on this page
     if len(projects) > 10:
@@ -298,6 +312,12 @@ async def handle_text_command(
     if cmd == "/reset":
         cs.has_session = False
         return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет чистую сессию.")
+    if cmd == "/stop":
+        import src.turn
+        if msg.chat_id in src.turn.ACTIVE_STOPS:
+            src.turn.ACTIVE_STOPS[msg.chat_id].set()
+            return BridgeReply("🛑 Остановка агента...")
+        return BridgeReply("⚠️ Нет активной задачи для остановки.")
     if cmd == "/thinking":
         mode = args.strip().lower()
         if mode in ("on", "true", "1"):
@@ -349,6 +369,12 @@ def handle_callback(
         parts = data.split(":")
         offset = int(parts[2]) if len(parts) > 2 else 0
         return _render_projects_picker(cs, offset)
+    if data.startswith("stop_turn"):
+        import src.turn
+        if cq.chat_id in src.turn.ACTIVE_STOPS:
+            src.turn.ACTIVE_STOPS[cq.chat_id].set()
+            return BridgeReply("Останавливаю...", toast="Запрос на остановку отправлен")
+        return BridgeReply("Нет активной задачи", toast="Ничего не выполняется")
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""

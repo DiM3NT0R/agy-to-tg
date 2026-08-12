@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import signal
 import subprocess
 from dataclasses import dataclass
 
@@ -86,6 +87,7 @@ async def run_agy(
     effort: str = "",
     conversation_id: str = "",
     on_event: "Callable[[dict], Awaitable[None]] | None" = None,
+    stop_event: asyncio.Event | None = None,
 ) -> AgyResult:
     """Run agy in print mode. Optionally stream JSON events."""
     _reap_zombies()
@@ -111,6 +113,7 @@ async def run_agy(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=2 * 1024 * 1024,  # 2MB
+            start_new_session=True, # Ensure agy runs in its own process group
         )
     except Exception as e:
         return AgyResult(text="", exit_code=-1, stderr=str(e))
@@ -144,12 +147,53 @@ async def run_agy(
             stderr_chunks.append(line)
 
     try:
-        await asyncio.wait_for(
-            asyncio.gather(read_stdout(), read_stderr(), process.wait()),
-            timeout=timeout
-        )
+        if stop_event:
+            stop_task = asyncio.create_task(stop_event.wait())
+            async def run_all():
+                await asyncio.gather(read_stdout(), read_stderr(), process.wait())
+            main_task = asyncio.create_task(run_all())
+            done, pending = await asyncio.wait(
+                [main_task, stop_task],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=timeout
+            )
+            if stop_task in done:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except OSError:
+                    pass
+                main_task.cancel()
+                await process.wait()
+                if on_event is None:
+                    text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+                else:
+                    text = final_text
+                text += "\n\n[Остановлено пользователем]"
+                stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n[stopped by user]"
+                return AgyResult(text=text, exit_code=130, stderr=stderr_out)
+            elif not done: # Timeout
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except OSError:
+                    pass
+                main_task.cancel()
+                stop_task.cancel()
+                await process.wait()
+                msg = f"agy timed out after {timeout}s"
+                stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n" + msg
+                return AgyResult(text=final_text, exit_code=124, stderr=stderr_out)
+            else:
+                stop_task.cancel()
+        else:
+            await asyncio.wait_for(
+                asyncio.gather(read_stdout(), read_stderr(), process.wait()),
+                timeout=timeout
+            )
     except asyncio.TimeoutError:
-        process.kill()
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except OSError:
+            pass
         await process.wait()
         msg = f"agy timed out after {timeout}s"
         return AgyResult(text=final_text, exit_code=124, stderr=msg)

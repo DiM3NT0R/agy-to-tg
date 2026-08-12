@@ -36,6 +36,7 @@ class ChatState:
     effort: str = "" # "low", "medium", "high"
     print_timeout: str = "" # e.g. "30m"
     conversation_id: str = "" # UUID of the currently selected conversation
+    projects: list[dict[str, str]] = field(default_factory=list) # [{'id': '...', 'snippet': '...'}]
 
 @dataclass
 class State:
@@ -82,6 +83,15 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         return None
     if not _CHAT_DIR_RE.match(p.name):
         return None
+    raw_projects = raw.get("projects", [])
+    projects = []
+    if isinstance(raw_projects, list):
+        for rp in raw_projects:
+            if isinstance(rp, dict):
+                pid = rp.get("id", "")
+                snippet = rp.get("snippet", "")
+                if isinstance(pid, str) and isinstance(snippet, str) and pid:
+                    projects.append({"id": pid, "snippet": snippet})
 
     return ChatState(
         chat_dir=str(p),
@@ -93,6 +103,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         effort=raw.get("effort", "") if isinstance(raw.get("effort"), str) else "",
         print_timeout=raw.get("print_timeout", "") if isinstance(raw.get("print_timeout"), str) else "",
         conversation_id=raw.get("conversation_id", "") if isinstance(raw.get("conversation_id"), str) else "",
+        projects=projects,
     )
 
 
