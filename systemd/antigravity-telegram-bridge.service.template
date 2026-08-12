@@ -14,13 +14,19 @@ Restart=on-failure
 RestartSec=5s
 
 # --- Hardening (mirrors kimi-telegram-bridge) ---
-# NOTE: RestrictAddressFamilies and RestrictSUIDSGID are intentionally
-# omitted. This bridge spawns `agy` with --dangerously-skip-permissions,
-# which is used for real sysadmin/network tasks (apt-get install, nmap
-# scans, etc.) — those need AF_PACKET and setuid binaries (ping, apt
-# postinst scripts) to keep working. Re-evaluate if the bridge's use case
-# narrows.
-NoNewPrivileges=true
+# NOTE: RestrictAddressFamilies, RestrictSUIDSGID, NoNewPrivileges, and
+# SystemCallFilter are intentionally omitted. This bridge spawns `agy`
+# with --dangerously-skip-permissions, which is used for arbitrary
+# sysadmin/network tasks (apt-get install, nmap scans, etc.) chosen by
+# whatever the Telegram user asks for. A syscall allowlist is
+# fundamentally incompatible with that: it broke on fchown (exit=-31 /
+# SIGSYS) the first time `agy` touched file ownership, and would keep
+# breaking unpredictably on the next syscall an arbitrary shell command
+# happens to need. NoNewPrivileges would similarly break setuid tools
+# (sudo, older ping) that such commands may rely on. Re-evaluate if the
+# bridge's use case narrows to something that doesn't need arbitrary
+# root shell access.
+SystemCallArchitectures=native
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -28,9 +34,6 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictNamespaces=true
 RestrictRealtime=true
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
 UMask=0077
 
 StandardOutput=append:__HOME__/.antigravity/bridge/logs/bridge.log
