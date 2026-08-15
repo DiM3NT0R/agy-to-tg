@@ -79,7 +79,7 @@ async def test_execute_agy_retries_on_servers_busy(monkeypatch: pytest.MonkeyPat
     async def fake_run_agy(**_: Any) -> AgyResult:
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= 3:
             return AgyResult(text="", exit_code=1, stderr="The model API is currently overloaded and servers are busy")
         return AgyResult(text="recovered reply", exit_code=0, stderr="")
 
@@ -91,4 +91,41 @@ async def test_execute_agy_retries_on_servers_busy(monkeypatch: pytest.MonkeyPat
     text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 0
     assert text == "recovered reply"
-    assert attempts == 2
+    assert attempts == 4
+
+
+async def test_execute_agy_does_not_retry_on_quota_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        nonlocal attempts
+        attempts += 1
+        return AgyResult(text="", exit_code=1, stderr="Resource has been exhausted: quota exceeded")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert code == 1
+    assert attempts == 1  # No retries on quota exceeded
+
+
+async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        nonlocal attempts
+        attempts += 1
+        return AgyResult(text="", exit_code=1, stderr="server is busy")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    monkeypatch.setattr("src.turn._RETRY_DELAY_S", 0.001)
+
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert code == 1
+    assert attempts == 11  # 1 initial + 10 retries = 11 total attempts

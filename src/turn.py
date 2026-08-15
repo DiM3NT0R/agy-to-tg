@@ -16,9 +16,7 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
 AGY_TIMEOUT_S = 900.0
-# Retry settings for generic transient agy failures (empty response, etc.)
-_RETRY_MAX = 2          # max number of retries after the first attempt
-_RETRY_DELAY_S = 5.0    # seconds to wait between retries
+
 
 ACTIVE_STOPS: dict[int, asyncio.Event] = {}
 
@@ -192,43 +190,47 @@ async def execute_agy(
 
 
 
-# Patterns that indicate the API is overloaded or servers are busy — retry these.
-_HIGH_TRAFFIC_PHRASES = (
-    "high traffic",
-    "experiencing high traffic",
-    "please try again in a minute",
-    "server is overloaded",
-    "servers are busy",
-    "server is busy",
-    "busy",
-    "overloaded",
-    "rate limit",
-    "rate_limit",
-    "too many requests",
-    "resource exhausted",
-    "resource_exhausted",
+# Retry policy: 3 instant attempts, then 7 attempts every 5 seconds (10 attempts total).
+_INSTANT_RETRIES = 3
+_DELAYED_RETRIES = 7
+_MAX_RETRIES = _INSTANT_RETRIES + _DELAYED_RETRIES
+_RETRY_DELAY_S = 5.0
+
+# Permanent errors that should NOT be retried (e.g. quota/credit exhaustion).
+_QUOTA_PHRASES = (
+    "quota reached",
     "quota exceeded",
-    "service unavailable",
-    "temporarily unavailable",
-    "capacity",
-    "503",
-    "429",
-    "502",
-    "504",
-    "gateway timeout",
-    "bad gateway",
+    "quota_exceeded",
+    "exceeded your quota",
+    "insufficient_quota",
+    "insufficient quota",
+    "out of credits",
+    "credit balance is too low",
+    "free tier limit",
+    "billing not enabled",
+    "check your quota",
 )
 
-# High-traffic retry timing: 1st attempt immediately (0s), next 10 attempts 5s each (11 total).
-_HT_DELAY_FIRST_S = 0.0
-_HT_DELAY_REPEAT_S = 5.0
-_HT_RETRY_MAX = 11
+
+def _is_quota_error(result: "AgyResult") -> bool:
+    """Return True when error indicates permanent quota/credits exhaustion."""
+    haystack = f"{result.stderr or ''} {result.text or ''}".lower()
+    return any(p in haystack for p in _QUOTA_PHRASES)
 
 
-def _is_high_traffic(result: "AgyResult") -> bool:
-    """Return True when stderr signals a transient server-overload or busy error."""
-    haystack = (result.stderr or "").lower()
-    return any(p in haystack for p in _HIGH_TRAFFIC_PHRASES)
+def _is_retryable_failure(result: "AgyResult") -> bool:
+    """Check if the agy result is a failure that should be retried."""
+    # Successful execution with non-empty response — no retry needed.
+    if result.exit_code == 0 and result.text and result.text.strip():
+        return False
+    # User cancellation (130) or hard timeout (124) — do not retry.
+    if result.exit_code in (130, 124):
+        return False
+    # Quota exhaustion — do not retry.
+    if _is_quota_error(result):
+        return False
+    # Any other error (servers are busy, overload, exit_code != 0, empty response) is retryable.
+    return True
 
 
 async def _run_agy_with_retry(
@@ -241,16 +243,14 @@ async def _run_agy_with_retry(
     on_event: object,
     updater: object,
 ) -> "AgyResult":
-    """Run agy, retrying on transient failures.
+    """Run agy, retrying on transient errors and server busy.
 
-    Two strategies:
-    - **High-traffic / servers are busy**: 1st retry immediately (0s), then 10 retries
-      every 5s (total 11 attempts). The user sees live status and can hit 🛑 at any time.
-    - **Other transient exit=1** (empty response, …):
-      up to _RETRY_MAX retries with _RETRY_DELAY_S fixed delay.
+    Retry schedule:
+    - 3 attempts immediately (0s delay)
+    - 7 attempts every 5s (total 10 attempts)
+    - Permanent errors (quota reached, user cancel) are not retried.
     """
-    attempt = 0        # counts all retry attempts regardless of type
-    ht_attempt = 0     # counts only high-traffic retries (for backoff calc)
+    attempt = 0
 
     while True:
         result = await run_agy(
@@ -268,73 +268,47 @@ async def _run_agy_with_retry(
             stop_event=stop_event,
         )
 
-        # Success or user-stop / hard timeout — return immediately.
-        if result.exit_code in (0, 130, 124) or stop_event.is_set():
+        # Success, user cancellation, quota reached, or stop requested
+        if stop_event.is_set() or not _is_retryable_failure(result):
             return result
 
-        is_transient = result.exit_code == 1 and not result.text
-
-        if not is_transient:
-            return result  # permanent error, give up
-
-        reason = (result.stderr or "unknown")[:200]
-
-        # ── HIGH-TRAFFIC / SERVERS BUSY: 1st immediate, next 10 every 5s (11 total) ──
-        if _is_high_traffic(result):
-            ht_attempt += 1
-            if ht_attempt > _HT_RETRY_MAX:
-                LOG.error(
-                    "agy high-traffic: giving up after %d attempts. reason: %s",
-                    _HT_RETRY_MAX, reason,
-                )
-                return result
-            delay = _HT_DELAY_FIRST_S if ht_attempt == 1 else _HT_DELAY_REPEAT_S
-            LOG.warning(
-                "agy exit=1 high-traffic (ht_attempt=%d/%d), retrying in %.0fs. reason: %s",
-                ht_attempt, _HT_RETRY_MAX, delay, reason,
-            )
-            if updater:
-                if delay == 0.0:
-                    await updater.update(
-                        f"🌐 Сервер перегружен, повторный запрос (попытка {ht_attempt}/{_HT_RETRY_MAX})…"
-                    )
-                else:
-                    await updater.update(
-                        f"🌐 Сервер перегружен, повтор через {int(delay)}с "
-                        f"(попытка {ht_attempt}/{_HT_RETRY_MAX})…"
-                    )
-            if delay > 0:
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                    return result  # user hit Stop
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                if stop_event.is_set():
-                    return result
-                await asyncio.sleep(0)  # yield to event loop
-            attempt += 1
-            continue  # loop back
-
-        # ── OTHER TRANSIENT: limited retries ──
         attempt += 1
-        if attempt > _RETRY_MAX:
+        if attempt > _MAX_RETRIES:
+            LOG.error(
+                "agy giving up after %d attempts. exit=%d stderr=%s",
+                _MAX_RETRIES, result.exit_code, (result.stderr or "unknown")[:200],
+            )
             return result
 
+        delay = 0.0 if attempt <= _INSTANT_RETRIES else _RETRY_DELAY_S
+        reason = (result.stderr or result.text or "unknown")[:200]
         LOG.warning(
-            "agy exit=1 (attempt %d/%d), retrying in %.0fs. reason: %s",
-            attempt, _RETRY_MAX + 1, _RETRY_DELAY_S, reason,
+            "agy exit=%d (attempt %d/%d), retrying in %.0fs. reason: %s",
+            result.exit_code, attempt, _MAX_RETRIES, delay, reason,
         )
+
         if updater:
-            await updater.update(
-                f"⚠️ Временная ошибка, повтор через {int(_RETRY_DELAY_S)}с "
-                f"(попытка {attempt}/{_RETRY_MAX})…"
-            )
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=_RETRY_DELAY_S)
-            return result  # stop was set during wait
-        except asyncio.TimeoutError:
-            pass  # expected — delay elapsed, continue to next attempt
+            if delay == 0.0:
+                await updater.update(
+                    f"🔄 Ошибка / Сервер занят, моментальный повтор ({attempt}/{_MAX_RETRIES})…"
+                )
+            else:
+                await updater.update(
+                    f"🌐 Сервер занят, повтор через {int(delay)}с ({attempt}/{_MAX_RETRIES})…"
+                )
+
+        if delay > 0:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                return result  # user hit Stop
+            except asyncio.TimeoutError:
+                pass
+        else:
+            if stop_event.is_set():
+                return result
+            await asyncio.sleep(0)  # yield control to event loop
+
+        continue
 
 
 
