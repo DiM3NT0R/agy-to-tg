@@ -124,7 +124,15 @@ async def _do_turn(
         reply = text or "🛑 Выполнение остановлено."
     elif code != 0:
         record_error()
-        reply = f"⚠️ Процесс agy завершился с ошибкой (код {code}). Попробуйте отправить команду /reset"
+        # `text` may carry a partial response or the API error string
+        # (populated from the stream-json result event by agy_runner).
+        if text:
+            reply = text
+        else:
+            reply = (
+                f"⚠️ agy завершился с ошибкой (код {code}). "
+                "Если ошибка повторяется, попробуйте /reset"
+            )
     else:
         record_turn()
         if not cs.has_session:

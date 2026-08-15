@@ -121,6 +121,7 @@ async def run_agy(
     stdout_chunks = []
     stderr_chunks = []
     final_text = ""
+    final_error = ""  # API-level error from stream-json result event
 
     async def read_stdout():
         nonlocal final_text
@@ -133,7 +134,9 @@ async def run_agy(
                     data = json.loads(line.decode("utf-8", errors="replace"))
                     await on_event(data)
                     if data.get("event") == "result":
-                        final_text = data.get("result", {}).get("response", "")
+                        result_obj = data.get("result", {})
+                        final_text = result_obj.get("response", "")
+                        final_error = result_obj.get("error", "")
                 except Exception:
                     pass
             else:
@@ -201,19 +204,23 @@ async def run_agy(
         gc.collect()
 
     stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-    
+
     if on_event is None:
         stdout_bytes = b"".join(stdout_chunks)
         truncated = False
         if len(stdout_bytes) > _STDOUT_CAP_BYTES:
             stdout_bytes = stdout_bytes[:_STDOUT_CAP_BYTES]
             truncated = True
-        
+
         text = stdout_bytes.decode("utf-8", errors="replace")
         if truncated:
             text += "\n\n[output truncated at 1MiB]"
     else:
         text = final_text
+        # Merge API-level error into stderr so callers can log it.
+        if final_error:
+            prefix = stderr_out + "\n" if stderr_out else ""
+            stderr_out = prefix + final_error
 
     return AgyResult(
         text=text,

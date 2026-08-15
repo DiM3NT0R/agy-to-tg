@@ -71,3 +71,24 @@ async def test_execute_agy_returns_timeout_reply(monkeypatch: pytest.MonkeyPatch
     text, code = await execute_agy(tg, 42, "", _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 124
     assert text == ""
+
+
+async def test_execute_agy_retries_on_servers_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return AgyResult(text="", exit_code=1, stderr="The model API is currently overloaded and servers are busy")
+        return AgyResult(text="recovered reply", exit_code=0, stderr="")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert code == 0
+    assert text == "recovered reply"
+    assert attempts == 2
