@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.media import clean_inbox, list_inbox
+from src.models import FALLBACK_MODELS, get_available_models
 from src.state import is_valid_model
 from src.telegram import InlineKeyboard
 
@@ -18,7 +19,6 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 
-MODEL_CHOICES: tuple[str, ...] = ("gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.5-flash-high", "gemini-3.1-pro-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking")
 EFFORT_CHOICES: tuple[str, ...] = ("low", "medium", "high")
 MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("code", "Code (auto)"),
@@ -111,10 +111,12 @@ def _settings_keyboard() -> InlineKeyboard:
 
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
+    models = get_available_models()
     rows: InlineKeyboard = []
-    for m in MODEL_CHOICES:
-        marker = "● " if m == current_per_chat else "○ "
-        rows.append([{"text": marker + m, "callback_data": f"m:{m}"}])
+    for model_id, display_name in models:
+        marker = "● " if model_id == current_per_chat else "○ "
+        label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
+        rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
     default_marker = "● " if not current_per_chat else "○ "
     rows.append([
         {"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"m:{_DEFAULT_TOKEN}"}
@@ -393,9 +395,9 @@ def handle_callback(
         if choice == _DEFAULT_TOKEN:
             cs.model = ""
             toast = "Настройки по умолчанию"
-        elif choice in MODEL_CHOICES:
+        elif is_valid_model(choice):
             cs.model = choice
-            toast = f"Model: {choice}"
+            toast = f"Модель: {choice}"
         else:
             toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)
