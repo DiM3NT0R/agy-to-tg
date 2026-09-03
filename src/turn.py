@@ -120,6 +120,8 @@ async def execute_agy(
                     cs.projects.insert(0, {"id": cid, "snippet": snippet})
                     # Keep max 10 projects
                     cs.projects = cs.projects[:10]
+            if updater:
+                await updater.update("💬 Подключение к модели...")
         
         if not updater:
             return
@@ -268,6 +270,15 @@ async def _run_agy_with_retry(
     attempt = 0
 
     while True:
+        made_progress = False
+
+        async def tracking_on_event(data: dict):
+            nonlocal made_progress
+            if data.get("event") == "step_update":
+                made_progress = True
+            if on_event:
+                await on_event(data)
+
         result = await run_agy(
             prompt=prompt,
             chat_dir=cs.chat_dir,
@@ -279,13 +290,17 @@ async def _run_agy_with_retry(
             effort=cs.effort,
             print_timeout=cs.print_timeout or "15m",
             conversation_id=cs.conversation_id if cs.has_session else "",
-            on_event=on_event,
+            on_event=tracking_on_event if on_event else None,
             stop_event=stop_event,
         )
 
         # Success, user cancellation, quota reached, or stop requested
         if stop_event.is_set() or not _is_retryable_failure(result):
             return result
+
+        # If agy made forward progress during this attempt, reset the retry counter!
+        if made_progress:
+            attempt = 0
 
         attempt += 1
         if attempt > _MAX_RETRIES:
