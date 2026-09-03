@@ -129,3 +129,36 @@ async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.Monkey
     text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 1
     assert attempts == 16  # 1 initial + 15 instant retries = 16 total attempts
+
+
+async def test_execute_agy_resets_retries_on_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def fake_run_agy(on_event: Any = None, **_: Any) -> AgyResult:
+        nonlocal attempts
+        attempts += 1
+        # For the first 10 attempts, fail immediately with server busy (no progress)
+        if attempts <= 10:
+            return AgyResult(text="", exit_code=1, stderr="server is busy")
+        # On attempt 11, make forward progress (step_update event), but still fail with transient error
+        if attempts == 11:
+            if on_event:
+                await on_event({"event": "step_update", "step_update": {"step_type": "tool", "state": "ACTIVE"}})
+            return AgyResult(text="", exit_code=1, stderr="server is busy")
+        # Because progress was made at attempt 11, retry counter was reset,
+        # so it sustains more retries beyond the initial 16!
+        if attempts < 20:
+            return AgyResult(text="", exit_code=1, stderr="server is busy")
+        # Finally succeed at attempt 20
+        return AgyResult(text="recovered after progress", exit_code=0, stderr="")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert code == 0
+    assert text == "recovered after progress"
+    assert attempts == 20
+
