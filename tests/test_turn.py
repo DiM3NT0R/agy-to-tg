@@ -110,6 +110,7 @@ async def test_execute_agy_does_not_retry_on_quota_error(monkeypatch: pytest.Mon
     text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 1
     assert attempts == 1  # No retries on quota exceeded
+    assert "квота" in text.lower() or "quota" in text.lower()
 
 
 async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,11 +122,10 @@ async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.Monkey
         return AgyResult(text="", exit_code=1, stderr="server is busy")
 
     monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
-    monkeypatch.setattr("src.turn._RETRY_DELAY_S", 0.001)
 
     tg = _FakeTG()
     cs = ChatState(chat_dir="/tmp/chat")
     cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
     text, code = await execute_agy(tg, 42, "test", _FakeMsg(), cs, cfg, "/usr/bin/agy")
     assert code == 1
-    assert attempts == 11  # 1 initial + 10 retries = 11 total attempts
+    assert attempts == 16  # 1 initial + 15 instant retries = 16 total attempts
