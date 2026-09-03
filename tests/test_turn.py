@@ -114,6 +114,7 @@ async def test_execute_agy_does_not_retry_on_quota_error(monkeypatch: pytest.Mon
 
 
 async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.turn._RETRY_DELAY_S", 0.0)
     attempts = 0
 
     async def fake_run_agy(**_: Any) -> AgyResult:
@@ -132,6 +133,7 @@ async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.Monkey
 
 
 async def test_execute_agy_resets_retries_on_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.turn._RETRY_DELAY_S", 0.0)
     attempts = 0
 
     async def fake_run_agy(on_event: Any = None, **_: Any) -> AgyResult:
