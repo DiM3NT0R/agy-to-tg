@@ -105,11 +105,14 @@ async def run_agy(
     if on_event is not None:
         args.extend(["--output-format", "stream-json"])
 
+    env = os.environ.copy()
+    env.setdefault("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+
     try:
         process = await asyncio.create_subprocess_exec(
             *args,
             cwd=chat_dir,
-            env=os.environ.copy(),
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=2 * 1024 * 1024,  # 2MB
