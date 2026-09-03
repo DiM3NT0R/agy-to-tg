@@ -186,15 +186,24 @@ async def execute_agy(
     elapsed = int((time.perf_counter() - turn_start) * 1000)
     LOG.info("turn chat=%d cwd=%s exit=%d ms=%d reply_len=%d",
              chat_id, cs.chat_dir, result.exit_code, elapsed, len(result.text or ""))
+
+    if _is_quota_error(result):
+        return QUOTA_EXPLANATION_MSG, result.exit_code
+
     return result.text or "", result.exit_code
 
 
+# Explanatory message when model/account quota is exceeded
+QUOTA_EXPLANATION_MSG = (
+    "⚠️ Исчерпана квота запросов к модели (Quota reached / exceeded).\n\n"
+    "Достигнут лимит использования текущей модели или аккаунта. "
+    "Пожалуйста, переключитесь на другую доступную модель командой /model "
+    "или повторите запрос позже после сброса квоты."
+)
 
-# Retry policy: 3 instant attempts, then 7 attempts every 5 seconds (10 attempts total).
-_INSTANT_RETRIES = 3
-_DELAYED_RETRIES = 7
-_MAX_RETRIES = _INSTANT_RETRIES + _DELAYED_RETRIES
-_RETRY_DELAY_S = 5.0
+# Retry policy: 15 instant retry attempts (0s delay).
+_MAX_RETRIES = 15
+_RETRY_DELAY_S = 0.0
 
 # Permanent errors that should NOT be retried (e.g. quota/credit exhaustion).
 _QUOTA_PHRASES = (
@@ -209,6 +218,13 @@ _QUOTA_PHRASES = (
     "free tier limit",
     "billing not enabled",
     "check your quota",
+    "resource_exhausted",
+    "resource has been exhausted",
+    "exhausted: quota",
+    "quota limit",
+    "rate limit exceeded: quota",
+    "you have exceeded your current quota",
+    "quota exhausted",
 )
 
 
@@ -246,8 +262,7 @@ async def _run_agy_with_retry(
     """Run agy, retrying on transient errors and server busy.
 
     Retry schedule:
-    - 3 attempts immediately (0s delay)
-    - 7 attempts every 5s (total 10 attempts)
+    - 15 attempts immediately (0s delay)
     - Permanent errors (quota reached, user cancel) are not retried.
     """
     attempt = 0
@@ -280,22 +295,17 @@ async def _run_agy_with_retry(
             )
             return result
 
-        delay = 0.0 if attempt <= _INSTANT_RETRIES else _RETRY_DELAY_S
+        delay = _RETRY_DELAY_S
         reason = (result.stderr or result.text or "unknown")[:200]
         LOG.warning(
-            "agy exit=%d (attempt %d/%d), retrying in %.0fs. reason: %s",
-            result.exit_code, attempt, _MAX_RETRIES, delay, reason,
+            "agy exit=%d (attempt %d/%d), instant retry. reason: %s",
+            result.exit_code, attempt, _MAX_RETRIES, reason,
         )
 
         if updater:
-            if delay == 0.0:
-                await updater.update(
-                    f"🔄 Ошибка / Сервер занят, моментальный повтор ({attempt}/{_MAX_RETRIES})…"
-                )
-            else:
-                await updater.update(
-                    f"🌐 Сервер занят, повтор через {int(delay)}с ({attempt}/{_MAX_RETRIES})…"
-                )
+            await updater.update(
+                f"🔄 Ошибка / Сервер занят, повтор ({attempt}/{_MAX_RETRIES})…"
+            )
 
         if delay > 0:
             try:
