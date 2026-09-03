@@ -203,9 +203,11 @@ QUOTA_EXPLANATION_MSG = (
     "или повторите запрос позже после сброса квоты."
 )
 
-# Retry policy: 15 instant retry attempts (0s delay).
+# Retry policy: 15 attempts total. First 3 attempts are instant (0s),
+# then remaining attempts wait a short delay (1.5s) to avoid burning all attempts on a brief network blip.
+_INSTANT_RETRIES = 3
 _MAX_RETRIES = 15
-_RETRY_DELAY_S = 0.0
+_RETRY_DELAY_S = 1.5
 
 # Permanent errors that should NOT be retried (e.g. quota/credit exhaustion).
 _QUOTA_PHRASES = (
@@ -264,7 +266,9 @@ async def _run_agy_with_retry(
     """Run agy, retrying on transient errors and server busy.
 
     Retry schedule:
-    - 15 attempts immediately (0s delay)
+    - 3 attempts immediately (0s delay)
+    - 12 attempts with 1.5s delay (total 15 attempts)
+    - Progress during run resets attempt counter.
     - Permanent errors (quota reached, user cancel) are not retried.
     """
     attempt = 0
@@ -310,17 +314,22 @@ async def _run_agy_with_retry(
             )
             return result
 
-        delay = _RETRY_DELAY_S
+        delay = 0.0 if attempt <= _INSTANT_RETRIES else _RETRY_DELAY_S
         reason = (result.stderr or result.text or "unknown")[:200]
         LOG.warning(
-            "agy exit=%d (attempt %d/%d), instant retry. reason: %s",
-            result.exit_code, attempt, _MAX_RETRIES, reason,
+            "agy exit=%d (attempt %d/%d), retrying in %.1fs. reason: %s",
+            result.exit_code, attempt, _MAX_RETRIES, delay, reason,
         )
 
         if updater:
-            await updater.update(
-                f"🔄 Ошибка / Сервер занят, повтор ({attempt}/{_MAX_RETRIES})…"
-            )
+            if delay == 0.0:
+                await updater.update(
+                    f"🔄 Ошибка / Сервер занят, моментальный повтор ({attempt}/{_MAX_RETRIES})…"
+                )
+            else:
+                await updater.update(
+                    f"🌐 Сервер занят, повтор через {delay:.1f}с ({attempt}/{_MAX_RETRIES})…"
+                )
 
         if delay > 0:
             try:
