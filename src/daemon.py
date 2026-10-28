@@ -21,7 +21,8 @@ from src.okf_memory import attach_memory
 from src.queue import TurnQueue
 from src.state import ChatState, SessionKey, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
-from src.turn import execute_agy
+from src.turn import ACTIVE_STOPS, execute_agy
+from src.updater import auto_update_loop
 from src.voice import cache_reply_text, get_cached_reply_text, synthesize_speech, transcribe_voice_groq
 from src.webhook import drain_webhook_updates, start_webhook_server
 
@@ -482,6 +483,7 @@ async def _detect_bot_username(cfg: Config) -> str:
         {"command": "reset", "description": "Сбросить текущую сессию"},
         {"command": "image", "description": "Вкл/выкл обработку фото"},
         {"command": "files", "description": "Список недавних файлов"},
+        {"command": "update", "description": "Проверить обновления из GitHub"},
     ]
     try:
         async with TelegramClient(cfg.telegram.bot_token) as tg:
@@ -520,6 +522,7 @@ def main() -> None:
         health_srv = await start_server()
 
         wh_task: asyncio.Task | None = None
+        upd_task: asyncio.Task | None = None
         wh_secret = ""
         wh_url = os.environ.get("CTI_WEBHOOK_URL", "")
         wh_port = int(os.environ.get("CTI_WEBHOOK_PORT") or "8080")
@@ -547,11 +550,24 @@ def main() -> None:
                 LOG.info("webhook setup: %s", wh_res.get("description") if wh_res.get("ok") else wh_res)
                 wh_task = asyncio.create_task(start_webhook_server(wh_port, tg, wh_secret))
 
+            upd_task = asyncio.create_task(
+                auto_update_loop(
+                    stop,
+                    is_busy=lambda: _QUEUE.active or bool(_QUEUE.pending) or bool(ACTIVE_STOPS),
+                )
+            )
+
             await run(
                 cfg=cfg, state_path=state_path, chats_root=chats_root,
                 tg=tg, agy_path=agy_path, info=info, stop_event=stop,
             )
         finally:
+            if upd_task is not None:
+                upd_task.cancel()
+                try:
+                    await upd_task
+                except Exception:
+                    pass
             if wh_task is not None:
                 wh_task.cancel()
                 try:
