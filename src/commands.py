@@ -357,6 +357,17 @@ async def handle_text_command(
             src.daemon._QUEUE.pending.clear()
             return BridgeReply(f"🧹 Очередь очищена (удалено сообщений: {cleared}).")
         return BridgeReply("📋 Статус очереди:\n" + "\n".join(src.daemon._QUEUE.status()))
+    if cmd == "/update":
+        from src.updater import check_and_pull_update, trigger_service_restart
+        updated, old_sha, new_sha = await asyncio.to_thread(check_and_pull_update)
+        if updated:
+            asyncio.get_running_loop().call_later(1.5, trigger_service_restart)
+            return BridgeReply(
+                f"✅ Обновление скачано (`{old_sha[:7]}` → `{new_sha[:7]}`). Перезапускаю сервис..."
+            )
+        if new_sha:
+            return BridgeReply(f"👌 Установлена актуальная версия (`{new_sha[:7]}`).")
+        return BridgeReply("⚠️ Не удалось проверить обновления в GitHub.")
     return None
 
 
