@@ -20,6 +20,8 @@ class InboundMessage:
     message_thread_id: int | None = None
     photo: list[dict[str, Any]] | None = None
     document: dict[str, Any] | None = None
+    voice: dict[str, Any] | None = None
+    audio: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class CallbackQuery:
     message_id: int
     data: str
     message_thread_id: int | None = None
+    message_text: str = ""
 
 
 # Telegram inline keyboards are nested lists of dicts: list[list[Button]].
@@ -44,7 +47,9 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
     text = msg.get("text") or msg.get("caption") or ""
     photo = msg.get("photo")
     doc = msg.get("document")
-    if not text and photo is None and doc is None:
+    voice = msg.get("voice")
+    audio = msg.get("audio")
+    if not text and photo is None and doc is None and voice is None and audio is None:
         return None
     chat = msg.get("chat") or {}
     sender = msg.get("from") or {}
@@ -64,6 +69,8 @@ def parse_update(update: dict[str, Any]) -> InboundMessage | None:
         message_thread_id=thread_id if isinstance(thread_id, int) else None,
         photo=list(photo) if isinstance(photo, list) else None,
         document=doc if isinstance(doc, dict) else None,
+        voice=voice if isinstance(voice, dict) else None,
+        audio=audio if isinstance(audio, dict) else None,
     )
 
 
@@ -79,6 +86,7 @@ def parse_callback_query(update: dict[str, Any]) -> CallbackQuery | None:
     chat_id = chat.get("id")
     thread_id = inner_msg.get("message_thread_id")
     message_id = inner_msg.get("message_id")
+    msg_text = inner_msg.get("text") or inner_msg.get("caption") or ""
     data = cq.get("data")
     update_id = update.get("update_id")
     if (
@@ -98,6 +106,7 @@ def parse_callback_query(update: dict[str, Any]) -> CallbackQuery | None:
         message_id=message_id,
         data=data,
         message_thread_id=thread_id if isinstance(thread_id, int) else None,
+        message_text=msg_text if isinstance(msg_text, str) else "",
     )
 
 
@@ -439,7 +448,7 @@ class TelegramClient:
                 payload["message_thread_id"] = message_thread_id
             if reply_to_message_id is not None and i == 0:
                 payload["reply_to_message_id"] = reply_to_message_id
-            if i == 0 and keyboard is not None:
+            if i == len(chunks) - 1 and keyboard is not None:
                 payload["reply_markup"] = {"inline_keyboard": keyboard}
             data = await self._post_with_retry("sendMessage", payload)
             if not data.get("ok"):
@@ -452,11 +461,10 @@ class TelegramClient:
                     data = await self._post_with_retry("sendMessage", fallback_payload)
                 if not data.get("ok"):
                     raise RuntimeError(f"sendMessage failed: {data.get('description')}")
-            if i == 0:
-                result = data.get("result") or {}
-                mid = result.get("message_id")
-                if isinstance(mid, int):
-                    first_message_id = mid
+            result = data.get("result") or {}
+            mid = result.get("message_id")
+            if isinstance(mid, int):
+                first_message_id = mid
         return first_message_id
 
     async def edit_message_text(
@@ -540,6 +548,34 @@ class TelegramClient:
         r2 = await self._client.get(
             f"https://api.telegram.org/file/bot{self._bot_token}/{file_path}")
         return r2.content
+
+    async def send_voice(
+        self,
+        chat_id: int,
+        voice_bytes: bytes,
+        *,
+        mime_type: str = "audio/ogg",
+        caption: str = "",
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
+        assert self._client is not None
+        filename = "voice.ogg" if "ogg" in mime_type else "voice.mp3"
+        data_fields: dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            data_fields["caption"] = caption[:1024]
+        if message_thread_id is not None:
+            data_fields["message_thread_id"] = str(message_thread_id)
+        if reply_to_message_id is not None:
+            data_fields["reply_to_message_id"] = str(reply_to_message_id)
+        files = {"voice": (filename, voice_bytes, mime_type)}
+        r = await self._client.post(f"{self._base}/sendVoice", data=data_fields, files=files)
+        resp = r.json()
+        if not resp.get("ok"):
+            raise RuntimeError(f"sendVoice failed: {resp.get('description')}")
+        res = resp.get("result") or {}
+        mid = res.get("message_id")
+        return mid if isinstance(mid, int) else None
 
     async def set_webhook(self, url: str, secret_token: str = "") -> dict[str, Any]:
         assert self._client is not None

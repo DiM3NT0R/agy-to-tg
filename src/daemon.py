@@ -8,7 +8,7 @@ import secrets
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -22,6 +22,7 @@ from src.queue import TurnQueue
 from src.state import ChatState, SessionKey, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
 from src.turn import execute_agy
+from src.voice import cache_reply_text, get_cached_reply_text, synthesize_speech, transcribe_voice_groq
 from src.webhook import drain_webhook_updates, start_webhook_server
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
@@ -171,12 +172,16 @@ async def _do_turn(
     except Exception:
         pass
     try:
-        await tg.send_message(
+        tts_kb = [[{"text": "🔊 Озвучить", "callback_data": "tts"}]] if reply and code == 0 else None
+        sent_mid = await tg.send_message(
             msg.chat_id, 
             reply, 
+            keyboard=tts_kb,
             message_thread_id=msg.message_thread_id,
             reply_to_message_id=msg.message_id if msg.chat_id < 0 else None
         )
+        if sent_mid and reply:
+            cache_reply_text(msg.chat_id, sent_mid, reply)
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -192,6 +197,59 @@ async def _process_text(
 
     cs = _ensure_chat_state(state, msg.chat_id, msg.message_thread_id, chats_root)
     save_state(state_path, state)
+
+    voice_obj = msg.voice or msg.audio
+    if voice_obj:
+        file_id = voice_obj.get("file_id")
+        if isinstance(file_id, str) and file_id:
+            stt_msg_id = None
+            try:
+                stt_msg_id = await tg.send_message(
+                    msg.chat_id,
+                    "🎙 Распознаю голосовое сообщение...",
+                    message_thread_id=msg.message_thread_id,
+                    reply_to_message_id=msg.message_id if msg.chat_id < 0 else None,
+                )
+            except Exception:
+                pass
+            try:
+                audio_bytes = await tg.get_file(file_id)  # type: ignore[attr-defined]
+                fname = str(voice_obj.get("file_name") or "voice.ogg")
+                transcribed = await transcribe_voice_groq(
+                    audio_bytes, cfg.telegram.groq_api_key, filename=fname
+                )
+            except Exception as exc:
+                LOG.error("Voice transcription failed: %s", exc)
+                err_txt = f"⚠️ Ошибка распознавания голоса: {exc}"
+                if stt_msg_id:
+                    try:
+                        await tg.edit_message_text(msg.chat_id, stt_msg_id, err_txt)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await tg.send_message(msg.chat_id, err_txt, message_thread_id=msg.message_thread_id)
+                    except Exception:
+                        pass
+                return
+
+            if not transcribed:
+                empty_txt = "⚠️ Не удалось распознать речь (пустой результат)."
+                if stt_msg_id:
+                    try:
+                        await tg.edit_message_text(msg.chat_id, stt_msg_id, empty_txt)
+                    except Exception:
+                        pass
+                return
+
+            shown = f"🎙 <i>«{transcribed}»</i>"
+            if stt_msg_id:
+                try:
+                    await tg.edit_message_text(msg.chat_id, stt_msg_id, shown)
+                except Exception:
+                    pass
+            combined_text = f"{msg.text}\n{transcribed}".strip() if msg.text else transcribed
+            msg = replace(msg, text=combined_text)
 
     reply = await handle_text_command(msg, cs, cfg)
     if reply is not None:
@@ -241,6 +299,43 @@ async def _process_callback(
     ):
         LOG.info("drop unauth callback user=%s", cq.user_id)
         await tg.answer_callback_query(cq.callback_query_id, text="Not authorized")
+        return
+
+    if cq.data == "tts" or cq.data.startswith("tts:"):
+        raw_text = get_cached_reply_text(cq.chat_id, cq.message_id) or cq.message_text
+        if not raw_text:
+            try:
+                await tg.answer_callback_query(cq.callback_query_id, text="⚠️ Текст для озвучки не найден")
+            except Exception:
+                pass
+            return
+        try:
+            await tg.answer_callback_query(cq.callback_query_id, text="🔊 Генерирую голосовое сообщение...")
+        except Exception:
+            pass
+        try:
+            await tg.send_chat_action(cq.chat_id, "record_voice", message_thread_id=cq.message_thread_id)  # type: ignore[call-arg]
+        except Exception:
+            pass
+        try:
+            audio_bytes, mime_type = await synthesize_speech(raw_text)
+            await tg.send_voice(  # type: ignore[attr-defined]
+                cq.chat_id,
+                audio_bytes,
+                mime_type=mime_type,
+                message_thread_id=cq.message_thread_id,
+                reply_to_message_id=cq.message_id,
+            )
+        except Exception as exc:
+            LOG.error("TTS synthesis/sendVoice failed: %s", exc)
+            try:
+                await tg.send_message(
+                    cq.chat_id,
+                    f"⚠️ Ошибка озвучивания ответа: {exc}",
+                    message_thread_id=cq.message_thread_id,
+                )
+            except Exception:
+                pass
         return
 
     cs = _ensure_chat_state(state, cq.chat_id, cq.message_thread_id, chats_root)
