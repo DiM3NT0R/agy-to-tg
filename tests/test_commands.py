@@ -71,9 +71,11 @@ async def test_model_set() -> None:
 async def test_reset_clears_session() -> None:
     cs = _state()
     cs.has_session = True
+    cs.conversation_id = "old"
     reply = await handle_text_command(_FakeMsg("/reset"), cs, _cfg())
     assert reply is not None
     assert cs.has_session is False
+    assert cs.conversation_id == ""
 
 
 async def test_unknown_returns_none() -> None:

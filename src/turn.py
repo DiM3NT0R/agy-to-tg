@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.agy_runner import run_agy
@@ -19,13 +21,51 @@ LOG = logging.getLogger("antigravity_telegram_bridge")
 AGY_TIMEOUT_S = 900.0
 
 
-ACTIVE_STOPS: dict[int, asyncio.Event] = {}
+SessionKey = tuple[int, int]
+
+
+def session_key(chat_id: int, message_thread_id: int | None) -> SessionKey:
+    return (chat_id, message_thread_id or 0)
+
+
+@dataclass(frozen=True)
+class ActiveRun:
+    event: asyncio.Event
+    nonce: str
+    user_id: int
+    status_message_id: int | None
+
+
+ACTIVE_STOPS: dict[SessionKey, ActiveRun] = {}
+
+
+def request_stop(
+    chat_id: int,
+    message_thread_id: int | None,
+    *,
+    user_id: int,
+    nonce: str = "",
+    status_message_id: int | None = None,
+) -> bool:
+    run = ACTIVE_STOPS.get(session_key(chat_id, message_thread_id))
+    if run is None or run.user_id != user_id:
+        return False
+    if nonce and run.nonce != nonce:
+        return False
+    if status_message_id is not None and run.status_message_id != status_message_id:
+        return False
+    run.event.set()
+    return True
+
 
 class StatusUpdater:
-    def __init__(self, tg: "_TelegramLike", chat_id: int, message_id: int):
+    def __init__(
+        self, tg: "_TelegramLike", chat_id: int, message_id: int, run_nonce: str = ""
+    ):
         self.tg = tg
         self.chat_id = chat_id
         self.message_id = message_id
+        self.run_nonce = run_nonce
         self.last_update = 0.0
         self.current_text = "Инициализация..."
         self.pending_task = None
@@ -74,7 +114,7 @@ class StatusUpdater:
                 self.chat_id, 
                 self.message_id, 
                 display_text,
-                keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{self.chat_id}"}]]
+                keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{self.run_nonce}"}]]
             )
         except Exception:
             pass
@@ -107,11 +147,12 @@ async def execute_agy(
     observed_cid = ""
 
     status_msg_id = None
+    run_nonce = secrets.token_urlsafe(6)
     try:
         sent = await tg.send_message(
             chat_id, 
             "🔄 Думаю...", 
-            keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{chat_id}"}]],
+            keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{run_nonce}"}]],
             message_thread_id=msg.message_thread_id,
             reply_to_message_id=msg.message_id if chat_id < 0 else None
         )
@@ -122,7 +163,7 @@ async def execute_agy(
 
     updater = None
     if status_msg_id:
-        updater = StatusUpdater(tg, chat_id, status_msg_id)
+        updater = StatusUpdater(tg, chat_id, status_msg_id, run_nonce)
 
     async def handle_event(data: dict):
         nonlocal observed_cid
@@ -173,7 +214,9 @@ async def execute_agy(
     hb_stop = asyncio.Event()
     hb_task = asyncio.create_task(_heartbeat(tg, chat_id, msg.message_thread_id, hb_stop))
     stop_event = asyncio.Event()
-    ACTIVE_STOPS[chat_id] = stop_event
+    key = session_key(chat_id, msg.message_thread_id)
+    active_run = ActiveRun(stop_event, run_nonce, getattr(msg, "user_id", 0), status_msg_id)
+    ACTIVE_STOPS[key] = active_run
     turn_start = time.perf_counter()
     try:
         result = await _run_agy_with_retry(
@@ -188,7 +231,8 @@ async def execute_agy(
         if result.exit_code != 0:
             LOG.error("agy exited with %d. stderr: %s", result.exit_code, result.stderr or "(empty)")
     finally:
-        ACTIVE_STOPS.pop(chat_id, None)
+        if ACTIVE_STOPS.get(key) is active_run:
+            ACTIVE_STOPS.pop(key, None)
         hb_stop.set()
         hb_task.cancel()
         if updater:
@@ -228,6 +272,8 @@ async def execute_agy(
 
     if _is_quota_error(result):
         return QUOTA_EXPLANATION_MSG, result.exit_code
+    if _is_location_error(result):
+        return LOCATION_EXPLANATION_MSG, result.exit_code
 
     return result.text or "", result.exit_code
 
@@ -238,6 +284,11 @@ QUOTA_EXPLANATION_MSG = (
     "Достигнут лимит использования текущей модели или аккаунта. "
     "Пожалуйста, переключитесь на другую доступную модель командой /model "
     "или повторите запрос позже после сброса квоты."
+)
+
+LOCATION_EXPLANATION_MSG = (
+    "⚠️ API отклонил текущий регион выхода в интернет. "
+    "Проверьте VPN/proxy egress и повторите запрос."
 )
 
 # Retry policy: 15 attempts total. First 3 attempts are instant (0s),
@@ -268,11 +319,21 @@ _QUOTA_PHRASES = (
     "quota exhausted",
 )
 
+_LOCATION_PHRASES = (
+    "user location is not supported",
+    "location is not supported for the api use",
+)
+
 
 def _is_quota_error(result: "AgyResult") -> bool:
     """Return True when error indicates permanent quota/credits exhaustion."""
     haystack = f"{result.stderr or ''} {result.text or ''}".lower()
     return any(p in haystack for p in _QUOTA_PHRASES)
+
+
+def _is_location_error(result: "AgyResult") -> bool:
+    haystack = f"{result.stderr or ''} {result.text or ''}".lower()
+    return any(p in haystack for p in _LOCATION_PHRASES)
 
 
 def _is_retryable_failure(result: "AgyResult") -> bool:
@@ -283,8 +344,8 @@ def _is_retryable_failure(result: "AgyResult") -> bool:
     # User cancellation (130) or hard timeout (124) — do not retry.
     if result.exit_code in (130, 124):
         return False
-    # Quota exhaustion — do not retry.
-    if _is_quota_error(result):
+    # Permanent account/location failures — do not retry.
+    if _is_quota_error(result) or _is_location_error(result):
         return False
     # Any other error (servers are busy, overload, exit_code != 0, empty response) is retryable.
     return True

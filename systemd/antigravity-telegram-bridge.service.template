@@ -26,14 +26,6 @@ RestartSec=5s
 # (sudo, older ping) that such commands may rely on. Re-evaluate if the
 # bridge's use case narrows to something that doesn't need arbitrary
 # root shell access.
-SystemCallArchitectures=native
-PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-LockPersonality=true
-RestrictNamespaces=true
-RestrictRealtime=true
 UMask=0077
 
 StandardOutput=append:__HOME__/.antigravity/bridge/logs/bridge.log

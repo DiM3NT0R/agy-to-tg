@@ -15,7 +15,9 @@ from pathlib import Path
 # Defense against state.json tampering: chat_dir paths must look like a tail
 # segment we generated ourselves (digits/letters/underscores/dashes, no slashes,
 # no '..'). Real chat_ids are integers, so the dir name is the stringified id.
-_CHAT_DIR_RE = re.compile(r"^-?[0-9]+$")
+_CHAT_DIR_RE = re.compile(r"^-?[0-9]+(?:_[0-9]+)?$")
+
+SessionKey = int | tuple[int, int]
 
 # Per-chat overrides have to be argv-safe. The regex rejects any character
 # that's not strictly needed for valid model identifiers (e.g. "gemini-3.5-flash").
@@ -41,7 +43,7 @@ class ChatState:
 @dataclass
 class State:
     last_update_id: int = 0
-    chats: dict[int, ChatState] = field(default_factory=dict)
+    chats: dict[SessionKey, ChatState] = field(default_factory=dict)
 
 
 def is_valid_model(name: str) -> bool:
@@ -115,17 +117,21 @@ def load_state(path: Path, chats_root: Path) -> State:
     except json.JSONDecodeError:
         return State()
     chats_raw = raw.get("chats") or {}
-    chats: dict[int, ChatState] = {}
+    chats: dict[SessionKey, ChatState] = {}
     for k, v in chats_raw.items():
         try:
-            chat_id = int(k)
+            if isinstance(k, str) and ":" in k:
+                chat_raw, thread_raw = k.split(":", 1)
+                session_key: SessionKey = (int(chat_raw), int(thread_raw))
+            else:
+                session_key = int(k)
         except (TypeError, ValueError):
             continue
         if not isinstance(v, dict):
             continue
         cs = _safe_chat_state(chats_root, v)
         if cs is not None:
-            chats[chat_id] = cs
+            chats[session_key] = cs
     return State(
         last_update_id=int(raw.get("last_update_id", 0)),
         chats=chats,
@@ -135,9 +141,14 @@ def load_state(path: Path, chats_root: Path) -> State:
 def save_state(path: Path, state: State) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
+    def encode_key(key: SessionKey) -> str:
+        if isinstance(key, tuple):
+            return f"{key[0]}:{key[1]}"
+        return str(key)
+
     payload = {
         "last_update_id": state.last_update_id,
-        "chats": {str(k): asdict(v) for k, v in state.chats.items()},
+        "chats": {encode_key(k): asdict(v) for k, v in state.chats.items()},
     }
     tmp.write_text(json.dumps(payload, indent=2))
     os.replace(tmp, path)

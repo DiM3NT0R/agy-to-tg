@@ -10,8 +10,8 @@ import pytest
 
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
-from src.daemon import DaemonInfo, run
-from src.state import load_state
+from src.daemon import DaemonInfo, _ensure_chat_state, run
+from src.state import State, load_state
 
 
 pytestmark = pytest.mark.asyncio
@@ -75,6 +75,16 @@ def _cfg() -> Config:
         ),
         agy=AgyConfig(default_workdir="/tmp", model="", mode="code"),
     )
+
+
+async def test_forum_topics_get_distinct_state_and_workdirs(tmp_path: Path) -> None:
+    state = State()
+    first = _ensure_chat_state(state, -100, 6, tmp_path)
+    second = _ensure_chat_state(state, -100, 155, tmp_path)
+    assert first is not second
+    assert first.chat_dir != second.chat_dir
+    assert (-100, 6) in state.chats
+    assert (-100, 155) in state.chats
 
 
 async def _fake_execute_agy(
