@@ -22,6 +22,8 @@ class TelegramConfig:
     allowed_user_ids: list[int]
     allowed_chat_ids: list[int] = field(default_factory=list)
     groq_api_key: str = ""
+    yandex_api_key: str = ""
+    cartesia_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,24 @@ def load_config(path: Path) -> Config:
     if not isinstance(groq_api_key, str):
         groq_api_key = ""
 
+    yandex_api_key = (
+        os.environ.get("YANDEX_API_KEY")
+        or tg_raw.get("yandex_api_key")
+        or raw.get("yandex_api_key")
+        or ""
+    )
+    if not isinstance(yandex_api_key, str):
+        yandex_api_key = ""
+
+    cartesia_api_key = (
+        os.environ.get("CARTESIA_API_KEY")
+        or tg_raw.get("cartesia_api_key")
+        or raw.get("cartesia_api_key")
+        or ""
+    )
+    if not isinstance(cartesia_api_key, str):
+        cartesia_api_key = ""
+
     a_raw = raw.get("agy") or {}
 
     model = str(a_raw.get("model") or "")
@@ -111,6 +131,8 @@ def load_config(path: Path) -> Config:
             allowed_user_ids=list(allowed_user_ids),
             allowed_chat_ids=list(allowed_chat_ids),
             groq_api_key=groq_api_key.strip(),
+            yandex_api_key=yandex_api_key.strip(),
+            cartesia_api_key=cartesia_api_key.strip(),
         ),
         agy=AgyConfig(
             chats_root=str(a_raw.get("chats_root") or ""),

@@ -1,4 +1,4 @@
-"""Voice support: Speech-to-Text (Groq Whisper) and Text-to-Speech synthesis."""
+"""Voice support: Speech-to-Text (Groq Whisper) and Neural Text-to-Speech synthesis."""
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +15,9 @@ LOG = logging.getLogger("antigravity_telegram_bridge")
 
 DEFAULT_GROQ_STT_MODEL = "whisper-large-v3"
 GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+YANDEX_TTS_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
+CARTESIA_TTS_URL = "https://api.cartesia.ai/tts/bytes"
+CARTESIA_DEFAULT_VOICE_ID = "069ff31a-5524-4945-a403-f746ee617507"  # Alexei (Russian male)
 GOOGLE_TTS_URL = "https://translate.google.com/translate_tts"
 
 # Keep last 200 bot replies in memory so tapping "🔊 Озвучить" can synthesize them
@@ -67,9 +70,9 @@ def _split_tts_chunks(text: str, max_chars: int = 180) -> list[str]:
     cleaned = strip_markdown_for_speech(text)
     if not cleaned:
         return []
-    # Cap total length at ~3000 chars (~3-4 minutes of audio)
-    if len(cleaned) > 3000:
-        cleaned = cleaned[:3000] + "..."
+    # Cap total length at ~4000 chars
+    if len(cleaned) > 4000:
+        cleaned = cleaned[:4000] + "..."
 
     chunks: list[str] = []
     remaining = cleaned
@@ -160,12 +163,92 @@ def _convert_mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes | None:
     return None
 
 
-async def synthesize_speech(text: str, *, lang: str = "ru") -> tuple[bytes, str]:
+async def _synthesize_yandex(text: str, api_key: str, *, voice: str = "filipp") -> tuple[bytes, str]:
+    """Synthesize speech using Yandex SpeechKit Neural TTS (returns native OGG Opus)."""
+    chunks = _split_tts_chunks(text, max_chars=4500)
+    if not chunks:
+        raise ValueError("Нет текста для озвучивания")
+    headers = {"Authorization": f"Api-Key {api_key}"}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0)) as client:
+        # Use first chunk up to 4500 chars so Telegram gets a single valid OGG Opus container with waveform
+        data = {
+            "text": chunks[0],
+            "lang": "ru-RU",
+            "voice": voice,
+            "format": "oggopus",
+            "speed": "1.1",
+        }
+        resp = await client.post(YANDEX_TTS_URL, headers=headers, data=data)
+        if resp.status_code != 200 or not resp.content:
+            raise RuntimeError(f"Yandex TTS HTTP {resp.status_code}: {resp.text[:200]}")
+        return resp.content, "audio/ogg"
+
+
+async def _synthesize_cartesia(
+    text: str, api_key: str, *, voice_id: str = CARTESIA_DEFAULT_VOICE_ID
+) -> tuple[bytes, str]:
+    """Synthesize speech using Cartesia Sonic 3.5 Neural TTS."""
+    chunks = _split_tts_chunks(text, max_chars=2500)
+    if not chunks:
+        raise ValueError("Нет текста для озвучивания")
+    headers = {
+        "Cartesia-Version": "2024-06-10",
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model_id": "sonic-3.5",
+        "transcript": chunks[0],
+        "voice": {
+            "mode": "id",
+            "id": voice_id,
+            "__experimental_controls": {"speed": 0.1},
+        },
+        "output_format": {
+            "container": "mp3",
+            "encoding": "mp3",
+            "sample_rate": 44100,
+        },
+        "language": "ru",
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0)) as client:
+        resp = await client.post(CARTESIA_TTS_URL, headers=headers, json=payload)
+        if resp.status_code != 200 or not resp.content:
+            raise RuntimeError(f"Cartesia TTS HTTP {resp.status_code}: {resp.text[:200]}")
+        mp3_data = resp.content
+        ogg_data = await asyncio.to_thread(_convert_mp3_to_ogg_opus, mp3_data)
+        if ogg_data:
+            return ogg_data, "audio/ogg"
+        return mp3_data, "audio/mpeg"
+
+
+async def synthesize_speech(
+    text: str,
+    *,
+    lang: str = "ru",
+    yandex_api_key: str = "",
+    cartesia_api_key: str = "",
+) -> tuple[bytes, str]:
     """Synthesize speech audio from text.
 
-    Returns (audio_bytes, mime_type) suitable for Telegram sendVoice.
+    Priority:
+    1. Yandex SpeechKit Neural (`filipp`, native `oggopus` with Telegram waveform)
+    2. Cartesia Sonic-3.5 Neural (`Alexei`)
+    3. Google TTS fallback
     """
-    chunks = _split_tts_chunks(text)
+    if yandex_api_key:
+        try:
+            return await _synthesize_yandex(text, yandex_api_key)
+        except Exception as exc:
+            LOG.warning("Yandex TTS failed, trying next provider: %s", exc)
+
+    if cartesia_api_key:
+        try:
+            return await _synthesize_cartesia(text, cartesia_api_key)
+        except Exception as exc:
+            LOG.warning("Cartesia TTS failed, falling back to Google TTS: %s", exc)
+
+    chunks = _split_tts_chunks(text, max_chars=180)
     if not chunks:
         raise ValueError("Нет текста для озвучивания")
 

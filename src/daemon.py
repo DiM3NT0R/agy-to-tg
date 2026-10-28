@@ -319,7 +319,11 @@ async def _process_callback(
         except Exception:
             pass
         try:
-            audio_bytes, mime_type = await synthesize_speech(raw_text)
+            audio_bytes, mime_type = await synthesize_speech(
+                raw_text,
+                yandex_api_key=cfg.telegram.yandex_api_key,
+                cartesia_api_key=cfg.telegram.cartesia_api_key,
+            )
             await tg.send_voice(  # type: ignore[attr-defined]
                 cq.chat_id,
                 audio_bytes,
