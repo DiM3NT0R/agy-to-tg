@@ -147,3 +147,20 @@ def test_markdown_to_telegram_html_renders_formatting_and_links() -> None:
     assert "file://" not in html_out
     assert "<blockquote><b>[NOTE]</b> Важное примечание</blockquote>" in html_out
     assert '<pre><code class="language-bash">echo &lt;test&gt; &amp; &#x27;ok&#x27;</code></pre>' in html_out
+
+
+def test_markdown_to_telegram_html_renders_tables_and_task_lists() -> None:
+    raw = (
+        "- [x] Сделано\n"
+        "- [ ] В планах\n"
+        "\n"
+        "| Параметр | Статус |\n"
+        "| :--- | :---: |\n"
+        "| Модель | OK |\n"
+    )
+    html_out = markdown_to_telegram_html(raw)
+    assert "✅ Сделано" in html_out
+    assert "⬜ В планах" in html_out
+    assert "<pre><code>" in html_out
+    assert "Параметр | Статус" in html_out
+    assert "Модель   | OK" in html_out
