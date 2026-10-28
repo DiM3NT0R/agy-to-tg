@@ -231,18 +231,62 @@ def markdown_to_telegram_html(text: str) -> str:
     lines = processed.split("\n")
     out_lines: list[str] = []
     quote_buffer: list[str] = []
+    table_buffer: list[str] = []
 
     def _flush_quote() -> None:
         if quote_buffer:
             out_lines.append("<blockquote>" + "\n".join(quote_buffer) + "</blockquote>")
             quote_buffer.clear()
 
+    def _flush_table() -> None:
+        if not table_buffer:
+            return
+        # Check if table_buffer has a separator line (e.g. | :--- | :---: |)
+        parsed_rows: list[list[str]] = []
+        has_sep = False
+        for tline in table_buffer:
+            stripped_t = tline.strip().strip("|")
+            cells = [c.strip() for c in stripped_t.split("|")]
+            if all(re.match(r"^:?-{2,}:?$", c) for c in cells if c):
+                has_sep = True
+                continue
+            parsed_rows.append(cells)
+        if has_sep and parsed_rows:
+            col_count = max(len(r) for r in parsed_rows)
+            widths = [0] * col_count
+            for r in parsed_rows:
+                for idx_c, val in enumerate(r):
+                    widths[idx_c] = max(widths[idx_c], len(val))
+            formatted_rows: list[str] = []
+            for r_idx, r in enumerate(parsed_rows):
+                padded = [
+                    html.escape(r[idx_c] if idx_c < len(r) else "").ljust(widths[idx_c])
+                    for idx_c in range(col_count)
+                ]
+                formatted_rows.append(" | ".join(padded).rstrip())
+                if r_idx == 0 and len(parsed_rows) > 1:
+                    formatted_rows.append("-+-".join("-" * w for w in widths))
+            out_lines.append("<pre><code>" + "\n".join(formatted_rows) + "</code></pre>")
+        else:
+            for tline in table_buffer:
+                out_lines.append(_format_inline_markdown(html.escape(tline)))
+        table_buffer.clear()
+
     for line in lines:
         # Check if line is just a code block placeholder
         if re.match(r"^\x00CB\d+\x00$", line.strip()):
             _flush_quote()
+            _flush_table()
             out_lines.append(line)
             continue
+
+        # Markdown table rows: | col1 | col2 |
+        if re.match(r"^[ \t]*\|.+\|[ \t]*$", line):
+            _flush_quote()
+            table_buffer.append(line)
+            continue
+        else:
+            _flush_table()
 
         # Blockquotes: > text
         q_match = re.match(r"^[ \t]*>[ \t]?(.*)$", line)
@@ -272,6 +316,16 @@ def markdown_to_telegram_html(text: str) -> str:
             out_lines.append("───────────────")
             continue
 
+        # Task list items: - [x] item or - [ ] item
+        task_match = re.match(r"^([ \t]*)[-*][ \t]+\[([ xX])\][ \t]+(.+)$", line)
+        if task_match:
+            indent = task_match.group(1)
+            checked = task_match.group(2).lower() == "x"
+            icon = "✅" if checked else "⬜"
+            item_content = _format_inline_markdown(html.escape(task_match.group(3)))
+            out_lines.append(f"{indent}{icon} {item_content}")
+            continue
+
         # Bullet list items: - item or * item at start of line
         b_match = re.match(r"^([ \t]*)[-*][ \t]+(.+)$", line)
         if b_match:
@@ -284,6 +338,7 @@ def markdown_to_telegram_html(text: str) -> str:
         out_lines.append(_format_inline_markdown(escaped_line))
 
     _flush_quote()
+    _flush_table()
     result = "\n".join(out_lines)
 
     for i, block_html in enumerate(code_blocks):
