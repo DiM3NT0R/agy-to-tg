@@ -21,6 +21,7 @@ class TelegramConfig:
     bot_token: str
     allowed_user_ids: list[int]
     allowed_chat_ids: list[int] = field(default_factory=list)
+    groq_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,15 @@ def load_config(path: Path) -> Config:
     ):
         raise ConfigError("telegram.allowed_chat_ids must be a list of integers")
 
+    groq_api_key = (
+        os.environ.get("GROQ_API_KEY")
+        or tg_raw.get("groq_api_key")
+        or raw.get("groq_api_key")
+        or ""
+    )
+    if not isinstance(groq_api_key, str):
+        groq_api_key = ""
+
     a_raw = raw.get("agy") or {}
 
     model = str(a_raw.get("model") or "")
@@ -100,6 +110,7 @@ def load_config(path: Path) -> Config:
             bot_token=bot_token,
             allowed_user_ids=list(allowed_user_ids),
             allowed_chat_ids=list(allowed_chat_ids),
+            groq_api_key=groq_api_key.strip(),
         ),
         agy=AgyConfig(
             chats_root=str(a_raw.get("chats_root") or ""),
