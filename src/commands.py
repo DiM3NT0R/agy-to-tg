@@ -317,8 +317,9 @@ async def handle_text_command(
         return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет чистую сессию.")
     if cmd == "/stop":
         import src.turn
-        if msg.chat_id in src.turn.ACTIVE_STOPS:
-            src.turn.ACTIVE_STOPS[msg.chat_id].set()
+        if src.turn.request_stop(
+            msg.chat_id, getattr(msg, "message_thread_id", None), user_id=msg.user_id
+        ):
             return BridgeReply("🛑 Остановка агента...")
         return BridgeReply("⚠️ Нет активной задачи для остановки.")
     if cmd == "/thinking":
@@ -383,8 +384,14 @@ def handle_callback(
         return _render_projects_picker(cs, offset)
     if data.startswith("stop_turn"):
         import src.turn
-        if cq.chat_id in src.turn.ACTIVE_STOPS:
-            src.turn.ACTIVE_STOPS[cq.chat_id].set()
+        nonce = data.partition(":")[2]
+        if src.turn.request_stop(
+            cq.chat_id,
+            cq.message_thread_id,
+            user_id=cq.user_id,
+            nonce=nonce,
+            status_message_id=cq.message_id,
+        ):
             return BridgeReply("Останавливаю...", toast="Запрос на остановку отправлен")
         return BridgeReply("Нет активной задачи", toast="Ничего не выполняется")
     if data == "R":

@@ -10,7 +10,7 @@ import pytest
 from src.agy_runner import AgyResult
 from src.config import AgyConfig, Config, TelegramConfig
 from src.state import ChatState
-from src.turn import execute_agy
+from src.turn import ACTIVE_STOPS, ActiveRun, execute_agy, request_stop, session_key
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,21 @@ class _FakeTG:
         
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         pass
+
+
+def test_stale_stop_callback_cannot_cancel_current_run() -> None:
+    event = asyncio.Event()
+    key = session_key(-100, 155)
+    ACTIVE_STOPS[key] = ActiveRun(event, "current", 42, 99)
+    try:
+        assert request_stop(-100, 155, user_id=42, nonce="old", status_message_id=99) is False
+        assert event.is_set() is False
+        assert request_stop(-100, 155, user_id=42, nonce="current", status_message_id=98) is False
+        assert request_stop(-100, 6, user_id=42, nonce="current", status_message_id=99) is False
+        assert request_stop(-100, 155, user_id=42, nonce="current", status_message_id=99) is True
+        assert event.is_set() is True
+    finally:
+        ACTIVE_STOPS.pop(key, None)
 
 
 async def test_execute_agy_returns_reply_and_records_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -210,4 +225,22 @@ async def test_execute_agy_restores_prev_session_when_stopped_before_disk_persis
     assert code == 130
     assert cs.has_session is True
     assert cs.conversation_id == prev_cid
+
+
+async def test_execute_agy_does_not_retry_unsupported_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        nonlocal attempts
+        attempts += 1
+        return AgyResult(text="", exit_code=1, stderr="User location is not supported for the API use")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "hello", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert code == 1
+    assert attempts == 1
+    assert "регион" in text.lower()
 

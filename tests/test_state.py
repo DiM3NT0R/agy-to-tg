@@ -58,6 +58,14 @@ def test_chat_keys_round_trip_as_int(tmp_path: Path) -> None:
     assert all(isinstance(k, int) for k in loaded.chats)
 
 
+def test_topic_key_round_trip(tmp_path: Path) -> None:
+    p = tmp_path / "state.json"
+    chat_dir = str(tmp_path / "chats" / "-100_155")
+    save_state(p, State(chats={(-100, 155): ChatState(chat_dir=chat_dir)}))
+    loaded = load_state(p, tmp_path / "chats")
+    assert (-100, 155) in loaded.chats
+
+
 def test_load_state_drops_malformed_chat_dirs(tmp_path: Path) -> None:
     """A tampered state.json with chat_dir outside chats_root should be dropped."""
     p = tmp_path / "state.json"

@@ -19,7 +19,7 @@ from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
 from src.okf_memory import attach_memory
 from src.queue import TurnQueue
-from src.state import ChatState, State, load_state, save_state
+from src.state import ChatState, SessionKey, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
 from src.turn import execute_agy
 from src.webhook import drain_webhook_updates, start_webhook_server
@@ -83,15 +83,25 @@ def _detect_agy_version(agy_path: str) -> str:
     return "unknown"
 
 
-def _ensure_chat_state(state: State, chat_id: int, chats_root: Path) -> ChatState:
-    cs = state.chats.get(chat_id)
+def _session_key(chat_id: int, message_thread_id: int | None) -> SessionKey:
+    if message_thread_id is None:
+        return chat_id
+    return (chat_id, message_thread_id)
+
+
+def _ensure_chat_state(
+    state: State, chat_id: int, message_thread_id: int | None, chats_root: Path
+) -> ChatState:
+    key = _session_key(chat_id, message_thread_id)
+    cs = state.chats.get(key)
     if cs is not None:
         Path(cs.chat_dir).mkdir(parents=True, exist_ok=True)
         return cs
-    chat_dir = chats_root / str(chat_id)
+    suffix = str(chat_id) if message_thread_id is None else f"{chat_id}_{message_thread_id}"
+    chat_dir = chats_root / suffix
     chat_dir.mkdir(parents=True, exist_ok=True)
     cs = ChatState(chat_dir=str(chat_dir))
-    state.chats[chat_id] = cs
+    state.chats[key] = cs
     return cs
 
 
@@ -165,7 +175,7 @@ async def _process_text(
         LOG.info("drop unauth user=%s", msg.user_id)
         return
 
-    cs = _ensure_chat_state(state, msg.chat_id, chats_root)
+    cs = _ensure_chat_state(state, msg.chat_id, msg.message_thread_id, chats_root)
     save_state(state_path, state)
 
     reply = await handle_text_command(msg, cs, cfg)
@@ -193,7 +203,9 @@ async def _process_text(
         if next_item is None:
             break
         nxt_msg, nxt_fut = next_item
-        nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
+        nxt_cs = _ensure_chat_state(
+            state, nxt_msg.chat_id, nxt_msg.message_thread_id, chats_root
+        )
         try:
             await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
         finally:
@@ -216,7 +228,7 @@ async def _process_callback(
         await tg.answer_callback_query(cq.callback_query_id, text="Not authorized")
         return
 
-    cs = _ensure_chat_state(state, cq.chat_id, chats_root)
+    cs = _ensure_chat_state(state, cq.chat_id, cq.message_thread_id, chats_root)
     reply = handle_callback(cq, cs, cfg)
     save_state(state_path, state)
 
