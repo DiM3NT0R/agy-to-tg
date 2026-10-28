@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.queue import TurnQueue
+from src.queue import MAX_QUEUE_DEPTH, TurnQueue
 from src.telegram import InboundMessage
 
 
@@ -33,19 +33,23 @@ async def test_submit_second_message_while_active_is_enqueued() -> None:
     assert "очередь" in status.lower() or "#1" in status
 
 
-async def test_owner_bypasses_queue_even_when_active() -> None:
+async def test_owner_is_enqueued_when_active() -> None:
     q = TurnQueue(owner_chat_id=42)
-    await q.submit(_msg(user_id=1))
-    status = await q.submit(_msg(user_id=42))
-    assert status is None
+    await q.submit(_msg(user_id=42, text="first"))
+    status1 = await q.submit(_msg(user_id=42, text="second"))
+    status2 = await q.submit(_msg(user_id=42, text="third"))
+    assert status1 is not None and "#1" in status1
+    assert status2 is not None and "#2" in status2
+    assert len(q.pending) == 2
 
 
 async def test_queue_overflow_returns_rejection() -> None:
     q = TurnQueue()
     await q.submit(_msg(user_id=1000))  # occupies "active" slot
-    for uid in range(1, 6):
+    for uid in range(1, MAX_QUEUE_DEPTH + 1):
         await q.submit(_msg(user_id=uid))
     status = await q.submit(_msg(user_id=99))
+    assert status is not None
     assert "переполнена" in status.lower()
 
 

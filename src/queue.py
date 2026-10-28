@@ -11,11 +11,11 @@ if TYPE_CHECKING:
     from src.telegram import InboundMessage
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
-MAX_QUEUE_DEPTH = 5
+MAX_QUEUE_DEPTH = 20
 
 # Rate-limit defaults (sliding window + per-user cooldown). These apply to
 # non-owner users only — the owner (first entry in allowed_user_ids) always
-# bypasses both the turn queue and the rate limiter.
+# bypasses the rate limiter.
 DEFAULT_COOLDOWN_SECONDS = 5.0
 DEFAULT_MAX_PER_WINDOW = 10
 DEFAULT_WINDOW_SECONDS = 60.0
@@ -25,13 +25,13 @@ DEFAULT_WINDOW_SECONDS = 60.0
 class TurnQueue:
     """FIFO queue ensuring one agy turn at a time across all chats.
 
-    When a turn is active, subsequent messages are enqueued.
-    Each chat may have at most one pending message.
-    Owner (first in allowed_user_ids) always skips the queue.
+    When a turn is active, subsequent messages (including from the owner)
+    are enqueued in FIFO order so concurrent agy sessions are never spawned.
     """
     active: bool = False
     pending: list[tuple[int, int, int | None, "InboundMessage", asyncio.Future[str | None]]] = field(default_factory=list)
     owner_chat_id: int = 0
+    max_queue_depth: int = MAX_QUEUE_DEPTH
 
     # Rate limiting state (per user_id).
     cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
@@ -68,15 +68,6 @@ class TurnQueue:
         events.append(now)
         return True, 0.0
 
-    def _pos(self, chat_id: int, user_id: int, thread_id: int | None) -> int:
-        for i, (cid, uid, tid, _, _) in enumerate(self.pending):
-            if cid == chat_id and uid == user_id and tid == thread_id:
-                return i + 1
-        return len(self.pending) + 1
-
-    def _already_queued(self, chat_id: int, user_id: int, thread_id: int | None) -> bool:
-        return any(cid == chat_id and uid == user_id and tid == thread_id for cid, uid, tid, _, _ in self.pending)
-
     async def submit(self, msg: "InboundMessage") -> str | None:
         """Submit a message for processing. Returns queued status str or None to proceed.
 
@@ -87,22 +78,13 @@ class TurnQueue:
         uid = msg.user_id
         tid = msg.message_thread_id
 
-        # Owner bypass
-        if msg.user_id == self.owner_chat_id:
-            return None
-
-        # Already active — enqueue
+        # Already active — enqueue in FIFO order (including owner messages)
         if self.active:
-            if self._already_queued(cid, uid, tid):
-                for i, (c, u, t, m, f) in enumerate(self.pending):
-                    if c == cid and u == uid and t == tid:
-                        self.pending[i] = (cid, uid, tid, msg, f)
-                        return f"⏳ Сообщение обновлено (очередь #{i+1})"
-            if len(self.pending) >= MAX_QUEUE_DEPTH:
+            if len(self.pending) >= self.max_queue_depth:
                 return "🚫 Очередь переполнена. Попробуйте чуть позже."
             fut: asyncio.Future[str | None] = asyncio.Future()
             self.pending.append((cid, uid, tid, msg, fut))
-            return f"⏳ В очереди (позиция #{len(self.pending)}). Скоро начнется обработка…"
+            return f"⏳ В очереди (позиция #{len(self.pending)}). Выполнится после завершения текущего ответа…"
 
         # Not active — proceed
         self.active = True

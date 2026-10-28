@@ -297,7 +297,7 @@ async def handle_text_command(
             cs.print_timeout = args
             return BridgeReply(f"⏱️ Таймаут установлен на {args}")
         return BridgeReply("⏱️ Используйте: /timeout <время> (например: 30m, 1h, 5m)")
-    if cmd == "/model":
+    if cmd in ("/model", "/models"):
         if args:
             if is_valid_model(args):
                 cs.model = args
@@ -311,8 +311,9 @@ async def handle_text_command(
                 return BridgeReply(f"🛡 Режим изменен на {args}")
             return BridgeReply(f"⚠️ Неподдерживаемый режим: {args}")
         return _render_mode_picker(cs, cfg)
-    if cmd == "/reset":
+    if cmd in ("/reset", "/new", "/clear"):
         cs.has_session = False
+        cs.conversation_id = ""
         return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет чистую сессию.")
     if cmd == "/stop":
         import src.turn
@@ -345,7 +346,16 @@ async def handle_text_command(
             return BridgeReply("📂 Папка пуста.")
         return BridgeReply("📂 Недавние файлы:\n" + "\n".join(f"• {f}" for f in files))
     if cmd == "/queue":
-        return BridgeReply("📋 Статус очереди доступен в логах сервера.")
+        import src.daemon
+        sub = args.strip().lower()
+        if sub == "clear":
+            cleared = len(src.daemon._QUEUE.pending)
+            for _, _, _, _, fut in src.daemon._QUEUE.pending:
+                if not fut.done():
+                    fut.set_result(None)
+            src.daemon._QUEUE.pending.clear()
+            return BridgeReply(f"🧹 Очередь очищена (удалено сообщений: {cleared}).")
+        return BridgeReply("📋 Статус очереди:\n" + "\n".join(src.daemon._QUEUE.status()))
     return None
 
 

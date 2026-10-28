@@ -4,7 +4,13 @@ from __future__ import annotations
 import pytest
 
 from src.config import TelegramConfig
-from src.telegram import InboundMessage, chunk_message, is_authorized, parse_update
+from src.telegram import (
+    InboundMessage,
+    chunk_message,
+    is_authorized,
+    markdown_to_telegram_html,
+    parse_update,
+)
 
 
 # --- parse_update ----------------------------------------------------
@@ -107,3 +113,37 @@ def test_chunk_default_max_is_4096() -> None:
     body = "x" * 5000
     chunks = chunk_message(body)
     assert all(len(c) <= 4096 for c in chunks)
+
+
+def test_chunk_balances_fenced_code_blocks() -> None:
+    code = "```python\n" + ("print('hello')\n" * 20) + "```"
+    chunks = chunk_message(code, max_len=120)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert c.count("```") % 2 == 0
+
+
+# --- markdown_to_telegram_html ---------------------------------------
+
+def test_markdown_to_telegram_html_renders_formatting_and_links() -> None:
+    raw = (
+        "### Заголовок\n"
+        "Текст с **жирным**, *курсивом*, `кодом` и ~~зачеркнутым~~.\n"
+        "- Пункт со ссылкой [Google](https://google.com)\n"
+        "- Локальный файл [daemon.py](file:///root/src/daemon.py#L10)\n"
+        "> [!NOTE] Важное примечание\n"
+        "```bash\n"
+        "echo <test> & 'ok'\n"
+        "```"
+    )
+    html_out = markdown_to_telegram_html(raw)
+    assert "<b>Заголовок</b>" in html_out
+    assert "<b>жирным</b>" in html_out
+    assert "<i>курсивом</i>" in html_out
+    assert "<code>кодом</code>" in html_out
+    assert "<s>зачеркнутым</s>" in html_out
+    assert '<a href="https://google.com">Google</a>' in html_out
+    assert "<code>daemon.py</code>" in html_out
+    assert "file://" not in html_out
+    assert "<blockquote><b>[NOTE]</b> Важное примечание</blockquote>" in html_out
+    assert '<pre><code class="language-bash">echo &lt;test&gt; &amp; &#x27;ok&#x27;</code></pre>' in html_out

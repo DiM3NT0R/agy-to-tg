@@ -164,3 +164,50 @@ async def test_execute_agy_resets_retries_on_progress(monkeypatch: pytest.Monkey
     assert text == "recovered after progress"
     assert attempts == 20
 
+
+async def test_execute_agy_preserves_session_after_stop_when_conv_exists(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conv_id = "11111111-2222-3333-4444-555555555555"
+    monkeypatch.setattr("src.turn._conversation_exists_on_disk", lambda cid: cid == conv_id)
+
+    async def fake_run_agy(on_event: Any = None, **_: Any) -> AgyResult:
+        if on_event:
+            await on_event({"event": "init", "conversation_id": conv_id})
+        return AgyResult(text="", exit_code=130, stderr="[stopped by user]")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+
+    tg = _FakeTG()
+    cs = ChatState(chat_dir=str(tmp_path), has_session=False, conversation_id="")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "start task", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+
+    assert code == 130
+    assert cs.has_session is True
+    assert cs.conversation_id == conv_id
+
+
+async def test_execute_agy_restores_prev_session_when_stopped_before_disk_persist(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prev_cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    unpersisted_cid = "99999999-9999-9999-9999-999999999999"
+    monkeypatch.setattr("src.turn._conversation_exists_on_disk", lambda cid: cid == prev_cid)
+
+    async def fake_run_agy(on_event: Any = None, **_: Any) -> AgyResult:
+        if on_event:
+            await on_event({"event": "init", "conversation_id": unpersisted_cid})
+        return AgyResult(text="", exit_code=130, stderr="[stopped by user]")
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+
+    tg = _FakeTG()
+    cs = ChatState(chat_dir=str(tmp_path), has_session=True, conversation_id=prev_cid)
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "continue task", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+
+    assert code == 130
+    assert cs.has_session is True
+    assert cs.conversation_id == prev_cid
+
