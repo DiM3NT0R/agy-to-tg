@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -86,11 +87,25 @@ class StatusUpdater:
             self.ticker_task.cancel()
 
 
+def _conversation_exists_on_disk(cid: str) -> bool:
+    """Return True if agy has persisted state for conversation_id on disk."""
+    if not cid:
+        return False
+    base = os.path.expanduser("~/.gemini/antigravity-cli")
+    conv_db = os.path.join(base, "conversations", f"{cid}.db")
+    brain_dir = os.path.join(base, "brain", cid)
+    return os.path.exists(conv_db) or os.path.exists(brain_dir)
+
+
 async def execute_agy(
     tg: "_TelegramLike", chat_id: int, prompt: str, msg: "InboundMessage",
     cs: "ChatState", cfg: "Config", agy_path: str,
 ) -> tuple[str, int]:
     """Run one agy turn with inline status."""
+    prev_has_session = cs.has_session
+    prev_conversation_id = cs.conversation_id
+    observed_cid = ""
+
     status_msg_id = None
     try:
         sent = await tg.send_message(
@@ -110,9 +125,11 @@ async def execute_agy(
         updater = StatusUpdater(tg, chat_id, status_msg_id)
 
     async def handle_event(data: dict):
+        nonlocal observed_cid
         if data.get("event") == "init":
             cid = data.get("conversation_id")
             if cid:
+                observed_cid = cid
                 cs.conversation_id = cid
                 # Add to projects if not exists
                 if not any(p.get("id") == cid for p in cs.projects):
@@ -188,6 +205,26 @@ async def execute_agy(
     elapsed = int((time.perf_counter() - turn_start) * 1000)
     LOG.info("turn chat=%d cwd=%s exit=%d ms=%d reply_len=%d",
              chat_id, cs.chat_dir, result.exit_code, elapsed, len(result.text or ""))
+
+    # Reconcile session state when a turn was stopped (130) or failed (non-zero):
+    # - If agy emitted a new conversation_id, keep it ONLY if agy actually persisted it on disk.
+    #   If it was killed before persisting, restore the previous session so the next turn
+    #   doesn't pass a non-existent --conversation UUID or lose history.
+    # - If a valid session exists on disk (either new or previous), ensure cs.has_session = True
+    #   even when stopped, so the next message continues the dialog instead of starting fresh.
+    if result.exit_code != 0:
+        if observed_cid and _conversation_exists_on_disk(observed_cid):
+            cs.conversation_id = observed_cid
+            cs.has_session = True
+        elif prev_has_session:
+            cs.conversation_id = prev_conversation_id
+            cs.has_session = True
+        else:
+            # First turn in a fresh session died before creating conversation DB
+            if observed_cid and not _conversation_exists_on_disk(observed_cid):
+                cs.projects = [p for p in cs.projects if p.get("id") != observed_cid]
+            cs.conversation_id = ""
+            cs.has_session = False
 
     if _is_quota_error(result):
         return QUOTA_EXPLANATION_MSG, result.exit_code

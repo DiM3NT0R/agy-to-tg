@@ -124,10 +124,31 @@ async def run_agy(
     stdout_chunks = []
     stderr_chunks = []
     final_text = ""
+    partial_text = ""
     final_error = ""  # API-level error from stream-json result event
 
+    async def _terminate_process_group(sig_first: int = signal.SIGTERM, grace_s: float = 1.5) -> None:
+        """Gracefully terminate process group so SQLite WAL and locks flush cleanly."""
+        try:
+            pgid = os.getpgid(process.pid)
+        except OSError:
+            return
+        try:
+            os.killpg(pgid, sig_first)
+        except OSError:
+            return
+        try:
+            await asyncio.wait_for(process.wait(), timeout=grace_s)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
     async def read_stdout():
-        nonlocal final_text
+        nonlocal final_text, partial_text, final_error
         while True:
             line = await process.stdout.readline()
             if not line:
@@ -136,7 +157,13 @@ async def run_agy(
                 try:
                     data = json.loads(line.decode("utf-8", errors="replace"))
                     await on_event(data)
-                    if data.get("event") == "result":
+                    if data.get("event") == "step_update":
+                        su = data.get("step_update", {})
+                        if su.get("step_type") == "agent_response":
+                            resp_text = su.get("text") or su.get("content") or ""
+                            if isinstance(resp_text, str) and resp_text.strip():
+                                partial_text = resp_text
+                    elif data.get("event") == "result":
                         result_obj = data.get("result", {})
                         final_text = result_obj.get("response", "")
                         final_error = result_obj.get("error", "")
@@ -164,30 +191,25 @@ async def run_agy(
                 timeout=timeout
             )
             if stop_task in done:
-                try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                except OSError:
-                    pass
+                await _terminate_process_group(signal.SIGTERM, grace_s=1.5)
                 main_task.cancel()
                 await process.wait()
                 if on_event is None:
-                    text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+                    text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
                 else:
-                    text = final_text
-                text += "\n\n[Остановлено пользователем]"
+                    text = (final_text or partial_text).strip()
+                if text:
+                    text += "\n\n🛑 [Остановлено пользователем]"
                 stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n[stopped by user]"
                 return AgyResult(text=text, exit_code=130, stderr=stderr_out)
             elif not done: # Timeout
-                try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                except OSError:
-                    pass
+                await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
                 main_task.cancel()
                 stop_task.cancel()
                 await process.wait()
                 msg = f"agy timed out after {timeout}s"
                 stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n" + msg
-                return AgyResult(text=final_text, exit_code=124, stderr=stderr_out)
+                return AgyResult(text=final_text or partial_text, exit_code=124, stderr=stderr_out)
             else:
                 stop_task.cancel()
         else:
@@ -196,13 +218,10 @@ async def run_agy(
                 timeout=timeout
             )
     except asyncio.TimeoutError:
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except OSError:
-            pass
+        await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
         await process.wait()
         msg = f"agy timed out after {timeout}s"
-        return AgyResult(text=final_text, exit_code=124, stderr=msg)
+        return AgyResult(text=final_text or partial_text, exit_code=124, stderr=msg)
     finally:
         gc.collect()
 

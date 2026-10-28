@@ -182,8 +182,11 @@ async def _process_text(
         await tg.send_message(msg.chat_id, status, message_thread_id=msg.message_thread_id)
         return
 
-    await _do_turn(msg, tg, cs, cfg, agy_path)
-    _QUEUE.complete()
+    try:
+        await _do_turn(msg, tg, cs, cfg, agy_path)
+    finally:
+        _QUEUE.complete()
+        save_state(state_path, state)
 
     while True:
         next_item = _QUEUE.next()
@@ -191,11 +194,13 @@ async def _process_text(
             break
         nxt_msg, nxt_fut = next_item
         nxt_cs = _ensure_chat_state(state, nxt_msg.chat_id, chats_root)
-        await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
-        _QUEUE.complete()
-        nxt_fut.set_result(None)
-
-    save_state(state_path, state)
+        try:
+            await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
+        finally:
+            _QUEUE.complete()
+            if not nxt_fut.done():
+                nxt_fut.set_result(None)
+            save_state(state_path, state)
 
 
 async def _process_callback(
@@ -224,6 +229,10 @@ async def _process_callback(
             cq.chat_id, cq.message_id, reply.text, keyboard=reply.keyboard
         )
     except Exception as err:
+        # For stop_turn callbacks, execute_agy deletes the status message upon stopping,
+        # so failing to edit it is expected and should not send a stray message.
+        if cq.data.startswith("stop_turn"):
+            return
         LOG.warning("editMessageText failed (sending fresh): %s", err)
         try:
             await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=cq.message_thread_id)
@@ -340,8 +349,24 @@ from src.telegram import parse_update as parse_update_for_daemon
 
 
 async def _detect_bot_username(cfg: Config) -> str:
+    bot_commands = [
+        {"command": "start", "description": "Приветствие и справка"},
+        {"command": "settings", "description": "Настройки чата и диалоги"},
+        {"command": "model", "description": "Выбрать модель ИИ"},
+        {"command": "mode", "description": "Режим работы (code / plan)"},
+        {"command": "status", "description": "Статус сессии и системы"},
+        {"command": "queue", "description": "Статус очереди сообщений"},
+        {"command": "stop", "description": "Остановить текущий ответ"},
+        {"command": "reset", "description": "Сбросить текущую сессию"},
+        {"command": "image", "description": "Вкл/выкл обработку фото"},
+        {"command": "files", "description": "Список недавних файлов"},
+    ]
     try:
         async with TelegramClient(cfg.telegram.bot_token) as tg:
+            try:
+                await tg.set_my_commands(bot_commands)
+            except Exception as err:
+                LOG.warning("setMyCommands failed: %s", err)
             me = await tg.get_me()
             uname = me.get("username")
             return f"@{uname}" if isinstance(uname, str) and uname else "?"
