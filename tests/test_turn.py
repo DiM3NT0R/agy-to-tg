@@ -244,3 +244,25 @@ async def test_execute_agy_does_not_retry_unsupported_location(monkeypatch: pyte
     assert attempts == 1
     assert "регион" in text.lower()
 
+
+async def test_execute_agy_does_not_retry_invalid_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def fake_run_agy(**_: Any) -> AgyResult:
+        nonlocal attempts
+        attempts += 1
+        return AgyResult(
+            text="",
+            exit_code=1,
+            stderr='error: invalid model selection (--model "claude-sonnet-4-6"): model claude-sonnet-4-6 is not recognized',
+        )
+
+    monkeypatch.setattr("src.turn.run_agy", fake_run_agy)
+    tg = _FakeTG()
+    cs = ChatState(chat_dir="/tmp/chat")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    text, code = await execute_agy(tg, 42, "hello", _FakeMsg(), cs, cfg, "/usr/bin/agy")
+    assert code == 1
+    assert attempts == 1
+    assert "/model" in text
+

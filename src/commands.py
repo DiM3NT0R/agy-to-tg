@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from src.state import ChatState
     from src.telegram import CallbackQuery, InboundMessage
 
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash-high"
 
 EFFORT_CHOICES: tuple[str, ...] = ("low", "medium", "high")
 MODE_CHOICES: tuple[tuple[str, str], ...] = (

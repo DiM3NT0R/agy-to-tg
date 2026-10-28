@@ -100,7 +100,22 @@ def _ensure_chat_state(
     suffix = str(chat_id) if message_thread_id is None else f"{chat_id}_{message_thread_id}"
     chat_dir = chats_root / suffix
     chat_dir.mkdir(parents=True, exist_ok=True)
-    cs = ChatState(chat_dir=str(chat_dir))
+    parent = state.chats.get(chat_id) if message_thread_id is not None else None
+    if parent is not None:
+        cs = ChatState(
+            chat_dir=str(chat_dir),
+            has_session=parent.has_session,
+            model=parent.model,
+            mode=parent.mode,
+            photo_enabled=parent.photo_enabled,
+            turn_count=parent.turn_count,
+            effort=parent.effort,
+            print_timeout=parent.print_timeout,
+            conversation_id=parent.conversation_id,
+            projects=[dict(p) for p in parent.projects],
+        )
+    else:
+        cs = ChatState(chat_dir=str(chat_dir))
     state.chats[key] = cs
     return cs
 
