@@ -87,6 +87,23 @@ async def test_forum_topics_get_distinct_state_and_workdirs(tmp_path: Path) -> N
     assert (-100, 155) in state.chats
 
 
+async def test_forum_topic_inherits_legacy_parent_chat_state_on_first_create(tmp_path: Path) -> None:
+    state = State()
+    parent = _ensure_chat_state(state, -100, None, tmp_path)
+    parent.has_session = True
+    parent.model = "gemini-4-argon-low"
+    parent.mode = "code"
+    parent.conversation_id = "8f00471d-5954-4fba-b857-65ef9edbbe5e"
+    parent.projects = [{"id": "8f00471d-5954-4fba-b857-65ef9edbbe5e", "snippet": "prev"}]
+
+    topic = _ensure_chat_state(state, -100, 175, tmp_path)
+    assert topic.chat_dir != parent.chat_dir
+    assert topic.has_session is True
+    assert topic.model == "gemini-4-argon-low"
+    assert topic.conversation_id == "8f00471d-5954-4fba-b857-65ef9edbbe5e"
+    assert len(topic.projects) == 1
+
+
 async def _fake_execute_agy(
     tg: Any, chat_id: int, prompt: str, msg: Any, cs: Any, cfg: Any, agy_path: str,
 ) -> tuple[str, int]:

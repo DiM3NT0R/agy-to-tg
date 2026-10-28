@@ -274,6 +274,8 @@ async def execute_agy(
         return QUOTA_EXPLANATION_MSG, result.exit_code
     if _is_location_error(result):
         return LOCATION_EXPLANATION_MSG, result.exit_code
+    if _is_invalid_model_error(result):
+        return INVALID_MODEL_EXPLANATION_MSG, result.exit_code
 
     return result.text or "", result.exit_code
 
@@ -289,6 +291,11 @@ QUOTA_EXPLANATION_MSG = (
 LOCATION_EXPLANATION_MSG = (
     "⚠️ API отклонил текущий регион выхода в интернет. "
     "Проверьте VPN/proxy egress и повторите запрос."
+)
+
+INVALID_MODEL_EXPLANATION_MSG = (
+    "⚠️ Выбранная модель устарела или недоступна в текущей версии agy.\n\n"
+    "Пожалуйста, выберите актуальную модель командой /model."
 )
 
 # Retry policy: 15 attempts total. First 3 attempts are instant (0s),
@@ -324,6 +331,11 @@ _LOCATION_PHRASES = (
     "location is not supported for the api use",
 )
 
+_INVALID_MODEL_PHRASES = (
+    "invalid model selection",
+    "is not recognized as a known model",
+)
+
 
 def _is_quota_error(result: "AgyResult") -> bool:
     """Return True when error indicates permanent quota/credits exhaustion."""
@@ -336,6 +348,11 @@ def _is_location_error(result: "AgyResult") -> bool:
     return any(p in haystack for p in _LOCATION_PHRASES)
 
 
+def _is_invalid_model_error(result: "AgyResult") -> bool:
+    haystack = f"{result.stderr or ''} {result.text or ''}".lower()
+    return any(p in haystack for p in _INVALID_MODEL_PHRASES)
+
+
 def _is_retryable_failure(result: "AgyResult") -> bool:
     """Check if the agy result is a failure that should be retried."""
     # Successful execution with non-empty response — no retry needed.
@@ -344,8 +361,8 @@ def _is_retryable_failure(result: "AgyResult") -> bool:
     # User cancellation (130) or hard timeout (124) — do not retry.
     if result.exit_code in (130, 124):
         return False
-    # Permanent account/location failures — do not retry.
-    if _is_quota_error(result) or _is_location_error(result):
+    # Permanent account/location/model failures — do not retry.
+    if _is_quota_error(result) or _is_location_error(result) or _is_invalid_model_error(result):
         return False
     # Any other error (servers are busy, overload, exit_code != 0, empty response) is retryable.
     return True
