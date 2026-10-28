@@ -161,6 +161,4 @@ def test_markdown_to_telegram_html_renders_tables_and_task_lists() -> None:
     html_out = markdown_to_telegram_html(raw)
     assert "✅ Сделано" in html_out
     assert "⬜ В планах" in html_out
-    assert "<pre><code>" in html_out
-    assert "Параметр | Статус" in html_out
-    assert "Модель   | OK" in html_out
+    assert "▫️ <b>Модель</b> — <i>Статус:</i> OK" in html_out

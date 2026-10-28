@@ -251,22 +251,25 @@ def markdown_to_telegram_html(text: str) -> str:
                 has_sep = True
                 continue
             parsed_rows.append(cells)
-        if has_sep and parsed_rows:
-            col_count = max(len(r) for r in parsed_rows)
-            widths = [0] * col_count
-            for r in parsed_rows:
-                for idx_c, val in enumerate(r):
-                    widths[idx_c] = max(widths[idx_c], len(val))
-            formatted_rows: list[str] = []
-            for r_idx, r in enumerate(parsed_rows):
-                padded = [
-                    html.escape(r[idx_c] if idx_c < len(r) else "").ljust(widths[idx_c])
-                    for idx_c in range(col_count)
-                ]
-                formatted_rows.append(" | ".join(padded).rstrip())
-                if r_idx == 0 and len(parsed_rows) > 1:
-                    formatted_rows.append("-+-".join("-" * w for w in widths))
-            out_lines.append("<pre><code>" + "\n".join(formatted_rows) + "</code></pre>")
+        if has_sep and len(parsed_rows) >= 2:
+            headers = parsed_rows[0]
+            out_lines.append("")
+            for r in parsed_rows[1:]:
+                first_col = _format_inline_markdown(html.escape(r[0])) if r else ""
+                rest_parts: list[str] = []
+                for idx_c in range(1, len(r)):
+                    val = _format_inline_markdown(html.escape(r[idx_c]))
+                    if not val:
+                        continue
+                    hdr = _format_inline_markdown(html.escape(headers[idx_c])) if idx_c < len(headers) else ""
+                    if hdr:
+                        rest_parts.append(f"<i>{hdr}:</i> {val}")
+                    else:
+                        rest_parts.append(val)
+                if rest_parts:
+                    out_lines.append(f"▫️ <b>{first_col}</b> — " + " · ".join(rest_parts))
+                else:
+                    out_lines.append(f"▫️ <b>{first_col}</b>")
         else:
             for tline in table_buffer:
                 out_lines.append(_format_inline_markdown(html.escape(tline)))
