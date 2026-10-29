@@ -85,14 +85,14 @@ async def test_unknown_returns_none() -> None:
 
 async def test_callback_nav_settings() -> None:
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:settings")
-    reply = handle_callback(cq, _state(), _cfg())
+    reply = await handle_callback(cq, _state(), _cfg())
     assert reply.keyboard is not None
 
 
 async def test_callback_model_choice() -> None:
     cs = _state()
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-3.6-flash-high")
-    reply = handle_callback(cq, cs, _cfg())
+    reply = await handle_callback(cq, cs, _cfg())
     assert cs.model == "gemini-3.6-flash-high"
     assert "gemini-3.6-flash-high" in reply.toast
 
@@ -101,7 +101,7 @@ async def test_callback_reset() -> None:
     cs = _state()
     cs.has_session = True
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="R")
-    reply = handle_callback(cq, cs, _cfg())
+    reply = await handle_callback(cq, cs, _cfg())
     assert cs.has_session is False
     assert "сброшена" in reply.toast.lower()
 
@@ -109,6 +109,52 @@ async def test_callback_reset() -> None:
 async def test_callback_mode_choice() -> None:
     cs = _state()
     cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="M:plan")
-    reply = handle_callback(cq, cs, _cfg())
+    reply = await handle_callback(cq, cs, _cfg())
     assert cs.mode == "plan"
     assert "plan" in reply.toast.lower()
+
+
+async def test_command_limits(monkeypatch) -> None:
+    from src.quota import QuotaSummary, QuotaGroup, QuotaBucket
+
+    fake_summary = QuotaSummary(
+        groups=[
+            QuotaGroup(
+                display_name="Claude and GPT models",
+                description="test",
+                buckets=[
+                    QuotaBucket(
+                        bucket_id="3p-weekly",
+                        display_name="Weekly Limit Remaining",
+                        window="weekly",
+                        reset_time="2026-10-30T07:58:32Z",
+                        remaining_fraction=0.8,
+                        description="",
+                    )
+                ],
+            )
+        ],
+        user_email="user@test.com",
+    )
+
+    async def fake_fetch(agy_path=""):
+        return fake_summary
+
+    monkeypatch.setattr("src.commands.fetch_quota_summary", fake_fetch)
+
+    reply = await handle_text_command(_FakeMsg("/limits"), _state(), _cfg())
+    assert reply is not None
+    assert "Лимиты моделей" in reply.text
+    assert "80%" in reply.text
+    assert "user@test.com" in reply.text
+    assert reply.keyboard is not None
+
+    reply_alias = await handle_text_command(_FakeMsg("/quota"), _state(), _cfg())
+    assert reply_alias is not None
+    assert "Лимиты моделей" in reply_alias.text
+
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="nav:limits")
+    cb_reply = await handle_callback(cq, _state(), _cfg())
+    assert "Лимиты моделей" in cb_reply.text
+    assert cb_reply.toast == "Лимиты обновлены"
+
