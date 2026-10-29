@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -63,6 +64,29 @@ def _read_oauth_token() -> tuple[str, str]:
     except Exception as exc:
         LOG.warning("Failed to read oauth token: %s", exc)
         return "", ""
+
+
+def is_token_expired_or_missing() -> bool:
+    """Return True if token file does not exist, has no access token, or expires in < 90s."""
+    if not TOKEN_FILE_PATH.exists():
+        return True
+    try:
+        data = json.loads(TOKEN_FILE_PATH.read_text(encoding="utf-8"))
+        token_obj = data.get("token") or {}
+        access_token = str(token_obj.get("access_token") or "")
+        if not access_token:
+            return True
+        expiry_str = str(token_obj.get("expiry") or "")
+        if not expiry_str:
+            return False
+        # Normalize nanoseconds to microseconds
+        cleaned_iso = re.sub(r"(\.\d{6})\d+Z$", r"\1+00:00", expiry_str).replace("Z", "+00:00")
+        target = datetime.fromisoformat(cleaned_iso)
+        now = datetime.now(timezone.utc)
+        return (target - now).total_seconds() < 90
+    except Exception as exc:
+        LOG.debug("is_token_expired_or_missing parse error: %s", exc)
+        return False
 
 
 async def _refresh_token_via_cli(agy_path: str = "") -> tuple[str, str]:
