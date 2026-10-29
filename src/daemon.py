@@ -344,7 +344,7 @@ async def _process_callback(
         return
 
     cs = _ensure_chat_state(state, cq.chat_id, cq.message_thread_id, chats_root)
-    reply = handle_callback(cq, cs, cfg)
+    reply = await handle_callback(cq, cs, cfg)
     save_state(state_path, state)
 
     try:
@@ -478,6 +478,7 @@ from src.telegram import parse_update as parse_update_for_daemon
 async def _detect_bot_username(cfg: Config) -> str:
     bot_commands = [
         {"command": "start", "description": "Приветствие и справка"},
+        {"command": "limits", "description": "Просмотр квот и лимитов моделей"},
         {"command": "settings", "description": "Настройки чата и диалоги"},
         {"command": "model", "description": "Выбрать модель ИИ"},
         {"command": "mode", "description": "Режим работы (code / plan)"},

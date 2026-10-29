@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from src.media import clean_inbox, list_inbox
 from src.models import FALLBACK_MODELS, get_available_models
+from src.quota import fetch_quota_summary, render_limits_card
 from src.state import is_valid_model
 from src.telegram import InlineKeyboard
 
@@ -30,13 +31,14 @@ WELCOME_TEXT = (
     "👋 Привет! Я твой Telegram-бот для Antigravity.\n\n"
     "Отправь мне любое сообщение, и я передам его агенту agy. "
     "Для каждого чата или темы создается своя отдельная сессия.\n\n"
-    "Команды: /start · /help · /status · /settings · /model · /mode · /reset"
+    "Команды: /start · /help · /limits · /status · /settings · /model · /mode · /reset"
 )
 
 HELP_TEXT = (
     "📖 Справка по мосту Antigravity\n\n"
     "Отправьте любой текст для общения с agy.\n\n"
     "Команды:\n"
+    "/limits   — просмотр лимитов моделей и таймеров сброса\n"
     "/status   — сводка по системе и текущему чату\n"
     "/settings — панель управления с кнопками\n"
     "/model    — выбрать модель (переопределяет настройки для чата)\n"
@@ -95,6 +97,15 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
     )
 
 
+def _limits_keyboard() -> InlineKeyboard:
+    return [
+        [
+            {"text": "🔄 Обновить квоту", "callback_data": "nav:limits"},
+            {"text": "⚙️ Настройки", "callback_data": "nav:settings"},
+        ]
+    ]
+
+
 def _settings_keyboard() -> InlineKeyboard:
     return [
         [
@@ -105,7 +116,10 @@ def _settings_keyboard() -> InlineKeyboard:
             {"text": "⚙️ Изменить Effort", "callback_data": "nav:effort"},
             {"text": "📁 Диалоги", "callback_data": "nav:projects"},
         ],
-        [{"text": "🧹 Сбросить сессию", "callback_data": "R"}],
+        [
+            {"text": "📊 Лимиты и квоты", "callback_data": "nav:limits"},
+            {"text": "🧹 Сбросить сессию", "callback_data": "R"},
+        ],
         [{"text": "🔄 Обновить", "callback_data": "nav:settings"}],
     ]
 
@@ -283,6 +297,9 @@ async def handle_text_command(
         return BridgeReply(WELCOME_TEXT)
     if cmd == "/help":
         return BridgeReply(HELP_TEXT)
+    if cmd in ("/limits", "/quota"):
+        qs = await fetch_quota_summary()
+        return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard())
     if cmd in ("/status", "/info"):
         return BridgeReply(render_status(cs, cfg))
     if cmd == "/settings":
@@ -371,7 +388,7 @@ async def handle_text_command(
     return None
 
 
-def handle_callback(
+async def handle_callback(
     cq: "CallbackQuery",
     cs: "ChatState",
     cfg: "Config",
@@ -383,6 +400,9 @@ def handle_callback(
         return BridgeReply(render_status(cs, cfg))
     if data == "nav:settings":
         return _render_settings(cs, cfg)
+    if data == "nav:limits":
+        qs = await fetch_quota_summary()
+        return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard(), toast="Лимиты обновлены")
     if data == "nav:model":
         return _render_model_picker(cs, cfg)
     if data == "nav:mode":
