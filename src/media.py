@@ -83,6 +83,53 @@ def list_inbox(workdir: str, limit: int = 5) -> list[str]:
     return result
 
 
+_EXCLUDE_WORKSPACE_DIRS = {INBOX_DIR_NAME, "okf_memory", "__pycache__", ".git", ".venv", ".gemini"}
+
+
+def list_workspace_files(workdir: str, limit: int = 15) -> list[tuple[str, int]]:
+    """List regular files in workdir excluding hidden directories and internal artifacts."""
+    root = Path(workdir).resolve()
+    if not root.exists() or not root.is_dir():
+        return []
+
+    collected: list[tuple[Path, float, int]] = []
+    try:
+        for p in root.rglob("*"):
+            # Skip excluded directory paths
+            parts = set(p.relative_to(root).parts)
+            if parts & _EXCLUDE_WORKSPACE_DIRS:
+                continue
+            if any(part.startswith(".") for part in parts):
+                continue
+            if p.is_file():
+                try:
+                    stat = p.stat()
+                    collected.append((p, stat.st_mtime, stat.st_size))
+                except OSError:
+                    continue
+    except Exception as exc:
+        LOG.warning("list_workspace_files failed in %s: %s", workdir, exc)
+
+    # Sort newest first
+    collected.sort(key=lambda item: item[1], reverse=True)
+    return [(str(p.relative_to(root)), sz) for p, _, sz in collected[:limit]]
+
+
+def safe_resolve_workspace_file(workdir: str, relpath: str) -> Path | None:
+    """Safely resolve relpath inside workdir, preventing directory traversal."""
+    if not relpath or not workdir:
+        return None
+    try:
+        root = Path(workdir).resolve()
+        target = (root / relpath.strip()).resolve()
+        target.relative_to(root)
+        if target.is_file():
+            return target
+    except (ValueError, OSError):
+        return None
+    return None
+
+
 async def build_media_prompt(
     msg, tg, state, cfg,
 ) -> str | None:

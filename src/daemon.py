@@ -50,6 +50,26 @@ class _TelegramLike(Protocol):
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
     async def send_chat_action(self, chat_id: int, action: str = "typing") -> None: ...
     async def delete_message(self, chat_id: int, message_id: int) -> None: ...
+    async def send_voice(
+        self,
+        chat_id: int,
+        voice_bytes: bytes,
+        *,
+        mime_type: str = "audio/ogg",
+        caption: str = "",
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None: ...
+    async def send_document(
+        self,
+        chat_id: int,
+        document_bytes: bytes,
+        filename: str,
+        *,
+        caption: str = "",
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None: ...
 
 
 RunAgyFunc = Callable[..., Awaitable[AgyResult]]
@@ -173,11 +193,19 @@ async def _do_turn(
     except Exception:
         pass
     try:
-        tts_kb = [[{"text": "🔊 Озвучить", "callback_data": "tts"}]] if reply and code == 0 else None
+        if code == 0:
+            reply_kb = [[{"text": "🔊 Озвучить", "callback_data": "tts"}]] if reply else None
+        elif "исчерпана квота" in reply.lower() or "quota" in reply.lower():
+            reply_kb = [
+                [{"text": "⚡ Перейти на Gemini Flash", "callback_data": "m:gemini-3.8-flash-high"}],
+                [{"text": "📊 Проверить лимиты", "callback_data": "nav:limits"}, {"text": "🤖 Другая модель", "callback_data": "nav:model"}],
+            ]
+        else:
+            reply_kb = None
         sent_mid = await tg.send_message(
             msg.chat_id, 
             reply, 
-            keyboard=tts_kb,
+            keyboard=reply_kb,
             message_thread_id=msg.message_thread_id,
             reply_to_message_id=msg.message_id if msg.chat_id < 0 else None
         )
@@ -255,10 +283,24 @@ async def _process_text(
     reply = await handle_text_command(msg, cs, cfg)
     if reply is not None:
         save_state(state_path, state)
-        try:
-            await tg.send_message(msg.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=msg.message_thread_id)
-        except Exception as err:
-            LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+        if reply.text:
+            try:
+                await tg.send_message(
+                    msg.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=msg.message_thread_id
+                )
+            except Exception as err:
+                LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
+        if reply.document_bytes:
+            try:
+                await tg.send_document(
+                    msg.chat_id,
+                    reply.document_bytes,
+                    reply.document_filename or "document.bin",
+                    message_thread_id=msg.message_thread_id,
+                    reply_to_message_id=msg.message_id if msg.chat_id < 0 else None,
+                )
+            except Exception as err:
+                LOG.error("sendDocument failed chat=%s: %s", msg.chat_id, err)
         return
 
     status = await _QUEUE.submit(msg)
@@ -351,20 +393,32 @@ async def _process_callback(
         await tg.answer_callback_query(cq.callback_query_id, text=reply.toast)
     except Exception:
         pass
-    try:
-        await tg.edit_message_text(
-            cq.chat_id, cq.message_id, reply.text, keyboard=reply.keyboard
-        )
-    except Exception as err:
-        # For stop_turn callbacks, execute_agy deletes the status message upon stopping,
-        # so failing to edit it is expected and should not send a stray message.
-        if cq.data.startswith("stop_turn"):
-            return
-        LOG.warning("editMessageText failed (sending fresh): %s", err)
+    if reply.text:
         try:
-            await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=cq.message_thread_id)
-        except Exception as err2:
-            LOG.error("fallback sendMessage failed: %s", err2)
+            await tg.edit_message_text(
+                cq.chat_id, cq.message_id, reply.text, keyboard=reply.keyboard
+            )
+        except Exception as err:
+            # For stop_turn callbacks, execute_agy deletes the status message upon stopping,
+            # so failing to edit it is expected and should not send a stray message.
+            if cq.data.startswith("stop_turn"):
+                return
+            LOG.warning("editMessageText failed (sending fresh): %s", err)
+            try:
+                await tg.send_message(cq.chat_id, reply.text, keyboard=reply.keyboard, message_thread_id=cq.message_thread_id)
+            except Exception as err2:
+                LOG.error("fallback sendMessage failed: %s", err2)
+
+    if reply.document_bytes:
+        try:
+            await tg.send_document(
+                cq.chat_id,
+                reply.document_bytes,
+                reply.document_filename or "document.bin",
+                message_thread_id=cq.message_thread_id,
+            )
+        except Exception as err:
+            LOG.error("callback sendDocument failed: %s", err)
 
 
 async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]:
@@ -479,6 +533,9 @@ async def _detect_bot_username(cfg: Config) -> str:
     bot_commands = [
         {"command": "start", "description": "Приветствие и справка"},
         {"command": "limits", "description": "Просмотр квот и лимитов моделей"},
+        {"command": "diff", "description": "Просмотр изменений git в проекте"},
+        {"command": "files", "description": "Файлы рабочей папки чата"},
+        {"command": "get", "description": "Скачать файл из проекта (/get имя)"},
         {"command": "settings", "description": "Настройки чата и диалоги"},
         {"command": "model", "description": "Выбрать модель ИИ"},
         {"command": "mode", "description": "Режим работы (code / plan)"},

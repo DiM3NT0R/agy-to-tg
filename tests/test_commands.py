@@ -158,3 +158,72 @@ async def test_command_limits(monkeypatch) -> None:
     assert "Лимиты моделей" in cb_reply.text
     assert cb_reply.toast == "Лимиты обновлены"
 
+
+async def test_command_files_and_get(tmp_path: Path) -> None:
+    cs = _state()
+    cs.chat_dir = str(tmp_path)
+
+    # Empty case
+    reply_empty = await handle_text_command(_FakeMsg("/files"), cs, _cfg())
+    assert reply_empty is not None
+    assert "пуста" in reply_empty.text
+
+    # Write a test file
+    test_file = tmp_path / "hello.py"
+    test_file.write_text("print('test 123')")
+
+    # /files list
+    reply_files = await handle_text_command(_FakeMsg("/files"), cs, _cfg())
+    assert reply_files is not None
+    assert "hello.py" in reply_files.text
+    assert reply_files.keyboard is not None
+    assert any("hello.py" in btn["text"] for row in reply_files.keyboard for btn in row)
+
+    # /get file
+    reply_get = await handle_text_command(_FakeMsg("/get hello.py"), cs, _cfg())
+    assert reply_get is not None
+    assert reply_get.document_bytes == b"print('test 123')"
+    assert reply_get.document_filename == "hello.py"
+
+    # /get non-existent
+    reply_get_none = await handle_text_command(_FakeMsg("/get missing.txt"), cs, _cfg())
+    assert reply_get_none is not None
+    assert "не найден" in reply_get_none.text
+
+    # Callback getfile
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="getfile:hello.py")
+    cb_reply = await handle_callback(cq, cs, _cfg())
+    assert cb_reply.document_bytes == b"print('test 123')"
+    assert "hello.py" in cb_reply.toast
+
+
+async def test_command_diff(tmp_path: Path, monkeypatch) -> None:
+    cs = _state()
+    cs.chat_dir = str(tmp_path)
+
+    # Non-git directory
+    reply_no_git = await handle_text_command(_FakeMsg("/diff"), cs, _cfg())
+    assert reply_no_git is not None
+    assert "нет репозитория git" in reply_no_git.text
+
+    # Mock git diff output (small)
+    async def mock_small_diff(workdir, args=""):
+        return "diff --git a/a.py b/a.py\n+new line", ""
+
+    monkeypatch.setattr("src.commands._run_git_diff", mock_small_diff)
+    reply_diff = await handle_text_command(_FakeMsg("/diff"), cs, _cfg())
+    assert reply_diff is not None
+    assert "+new line" in reply_diff.text
+    assert reply_diff.document_bytes is None
+
+    # Mock git diff output (large -> patch document)
+    async def mock_large_diff(workdir, args=""):
+        return "+line\n" * 1000, ""
+
+    monkeypatch.setattr("src.commands._run_git_diff", mock_large_diff)
+    reply_large = await handle_text_command(_FakeMsg("/diff"), cs, _cfg())
+    assert reply_large is not None
+    assert reply_large.document_bytes is not None
+    assert reply_large.document_filename == "changes.patch"
+
+
