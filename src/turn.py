@@ -271,6 +271,19 @@ async def execute_agy(
             cs.has_session = False
 
     if _is_quota_error(result):
+        try:
+            from src.quota import fetch_quota_summary, render_limits_card
+            qs = await fetch_quota_summary(agy_path)
+            if qs and qs.groups and not qs.error:
+                card = render_limits_card(qs)
+                return (
+                    f"⚠️ <b>Исчерпана квота запросов к модели</b>\n\n"
+                    f"{card}\n\n"
+                    f"💡 <i>Переключитесь на модель Gemini Flash кнопкой ниже — она доступна без ограничений.</i>",
+                    result.exit_code,
+                )
+        except Exception:
+            pass
         return QUOTA_EXPLANATION_MSG, result.exit_code
     if _is_location_error(result):
         return LOCATION_EXPLANATION_MSG, result.exit_code
@@ -304,8 +317,8 @@ _INSTANT_RETRIES = 3
 _MAX_RETRIES = 15
 _RETRY_DELAY_S = 1.5
 
-# Permanent errors that should NOT be retried (e.g. quota/credit exhaustion).
-_QUOTA_PHRASES = (
+# Permanent errors that should NOT be retried (e.g. hard weekly/monthly quota or credit exhaustion).
+_HARD_QUOTA_PHRASES = (
     "quota reached",
     "quota exceeded",
     "quota_exceeded",
@@ -316,14 +329,31 @@ _QUOTA_PHRASES = (
     "credit balance is too low",
     "free tier limit",
     "billing not enabled",
-    "check your quota",
-    "resource_exhausted",
-    "resource has been exhausted",
-    "exhausted: quota",
-    "quota limit",
-    "rate limit exceeded: quota",
     "you have exceeded your current quota",
     "quota exhausted",
+)
+
+# Transient rate limit phrases (TPM/RPM burst spikes) which recover quickly after backoff.
+_TRANSIENT_RATE_LIMIT_PHRASES = (
+    "rate limit exceeded",
+    "rate_limit_exceeded",
+    "too many requests",
+    "429",
+    "resource_exhausted",
+    "resource has been exhausted",
+    "check your quota",
+    "quota limit",
+    "exhausted: quota",
+)
+
+_QUOTA_PHRASES = _HARD_QUOTA_PHRASES + _TRANSIENT_RATE_LIMIT_PHRASES
+
+_AUTH_ERROR_PHRASES = (
+    "you are not logged into antigravity",
+    "not logged into antigravity",
+    "error getting token source",
+    "unauthorized",
+    "401",
 )
 
 _LOCATION_PHRASES = (
@@ -338,17 +368,40 @@ _INVALID_MODEL_PHRASES = (
 
 
 def _is_quota_error(result: "AgyResult") -> bool:
-    """Return True when error indicates permanent quota/credits exhaustion."""
+    """Return True when error indicates quota/credits exhaustion."""
+    # A successful execution (exit_code == 0 with text) is NEVER a quota error!
+    if result.exit_code == 0 and result.text and result.text.strip():
+        return False
     haystack = f"{result.stderr or ''} {result.text or ''}".lower()
     return any(p in haystack for p in _QUOTA_PHRASES)
 
 
+def _is_hard_quota_error(result: "AgyResult") -> bool:
+    """Return True only on permanent hard quota exhaustion (not transient burst rate limits)."""
+    if result.exit_code == 0 and result.text and result.text.strip():
+        return False
+    haystack = f"{result.stderr or ''} {result.text or ''}".lower()
+    return any(p in haystack for p in _HARD_QUOTA_PHRASES)
+
+
+def _is_auth_error(result: "AgyResult") -> bool:
+    """Return True on token expiry or unauthenticated status."""
+    if result.exit_code == 0 and result.text and result.text.strip():
+        return False
+    haystack = f"{result.stderr or ''} {result.text or ''}".lower()
+    return any(p in haystack for p in _AUTH_ERROR_PHRASES)
+
+
 def _is_location_error(result: "AgyResult") -> bool:
+    if result.exit_code == 0 and result.text and result.text.strip():
+        return False
     haystack = f"{result.stderr or ''} {result.text or ''}".lower()
     return any(p in haystack for p in _LOCATION_PHRASES)
 
 
 def _is_invalid_model_error(result: "AgyResult") -> bool:
+    if result.exit_code == 0 and result.text and result.text.strip():
+        return False
     haystack = f"{result.stderr or ''} {result.text or ''}".lower()
     return any(p in haystack for p in _INVALID_MODEL_PHRASES)
 
@@ -361,10 +414,10 @@ def _is_retryable_failure(result: "AgyResult") -> bool:
     # User cancellation (130) or hard timeout (124) — do not retry.
     if result.exit_code in (130, 124):
         return False
-    # Permanent account/location/model failures — do not retry.
-    if _is_quota_error(result) or _is_location_error(result) or _is_invalid_model_error(result):
+    # Permanent hard quota, location, or invalid model failures — do not retry.
+    if _is_hard_quota_error(result) or _is_location_error(result) or _is_invalid_model_error(result):
         return False
-    # Any other error (servers are busy, overload, exit_code != 0, empty response) is retryable.
+    # Transient rate limits, auth blips, server busy, exit_code != 0 are all retryable.
     return True
 
 
@@ -378,14 +431,23 @@ async def _run_agy_with_retry(
     on_event: object,
     updater: object,
 ) -> "AgyResult":
-    """Run agy, retrying on transient errors and server busy.
+    """Run agy, retrying on transient errors, burst rate limits, and auth blips.
 
     Retry schedule:
     - 3 attempts immediately (0s delay)
     - 12 attempts with 1.5s delay (total 15 attempts)
     - Progress during run resets attempt counter.
-    - Permanent errors (quota reached, user cancel) are not retried.
+    - Permanent errors (hard quota reached, user cancel) are not retried.
     """
+    # Proactively ensure OAuth token is not expired before starting turn
+    try:
+        from src.quota import is_token_expired_or_missing, _refresh_token_via_cli
+        if is_token_expired_or_missing():
+            LOG.info("OAuth token expired or missing, refreshing via CLI before turn...")
+            await _refresh_token_via_cli(agy_path)
+    except Exception as exc:
+        LOG.debug("Pre-turn token check error: %s", exc)
+
     attempt = 0
 
     while True:
@@ -413,7 +475,7 @@ async def _run_agy_with_retry(
             stop_event=stop_event,
         )
 
-        # Success, user cancellation, quota reached, or stop requested
+        # Success, user cancellation, hard quota reached, or stop requested
         if stop_event.is_set() or not _is_retryable_failure(result):
             return result
 
@@ -429,15 +491,32 @@ async def _run_agy_with_retry(
             )
             return result
 
-        delay = 0.0 if attempt <= _INSTANT_RETRIES else _RETRY_DELAY_S
+        # Refresh token on authentication failures
+        if _is_auth_error(result):
+            try:
+                from src.quota import _refresh_token_via_cli
+                await _refresh_token_via_cli(agy_path)
+            except Exception:
+                pass
+
         reason = (result.stderr or result.text or "unknown")[:200]
+        delay = 0.0 if attempt <= _INSTANT_RETRIES else _RETRY_DELAY_S
+
+        # Transient rate limit burst (429 / resource exhausted): wait longer
+        if any(p in reason.lower() for p in _TRANSIENT_RATE_LIMIT_PHRASES):
+            delay = max(delay, 2.5)
+
         LOG.warning(
             "agy exit=%d (attempt %d/%d), retrying in %.1fs. reason: %s",
             result.exit_code, attempt, _MAX_RETRIES, delay, reason,
         )
 
         if updater:
-            if delay == 0.0:
+            if any(p in reason.lower() for p in _TRANSIENT_RATE_LIMIT_PHRASES):
+                await updater.update(
+                    f"⏳ Превышен кратковременный лимит запросов, пауза {delay:.1f}с ({attempt}/{_MAX_RETRIES})…"
+                )
+            elif delay == 0.0:
                 await updater.update(
                     f"🔄 Ошибка / Сервер занят, моментальный повтор ({attempt}/{_MAX_RETRIES})…"
                 )

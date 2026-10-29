@@ -128,6 +128,34 @@ async def test_execute_agy_does_not_retry_on_quota_error(monkeypatch: pytest.Mon
     assert "квота" in text.lower() or "quota" in text.lower()
 
 
+def test_is_quota_error_ignores_successful_turns() -> None:
+    from src.turn import _is_quota_error
+    from src.agy_runner import AgyResult
+
+    # Exit code 0 with text mentioning quota should NOT be treated as error
+    succ = AgyResult(text="Мы проверили лимит квоты: quota exceeded не обнаружено", exit_code=0, stderr="")
+    assert _is_quota_error(succ) is False
+
+    # Exit code 1 with stderr mentioning quota SHOULD be treated as error
+    err = AgyResult(text="", exit_code=1, stderr="Error: quota exceeded")
+    assert _is_quota_error(err) is True
+
+
+def test_transient_rate_limit_is_retryable() -> None:
+    from src.turn import _is_retryable_failure, _is_hard_quota_error
+    from src.agy_runner import AgyResult
+
+    # Transient 429 burst rate limit should be retryable
+    transient = AgyResult(text="", exit_code=1, stderr="rpc error: code = ResourceExhausted desc = Rate limit exceeded")
+    assert _is_hard_quota_error(transient) is False
+    assert _is_retryable_failure(transient) is True
+
+    # Hard weekly exhaustion should NOT be retryable
+    hard = AgyResult(text="", exit_code=1, stderr="You have exceeded your quota limit")
+    assert _is_hard_quota_error(hard) is True
+    assert _is_retryable_failure(hard) is False
+
+
 async def test_execute_agy_gives_up_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("src.turn._RETRY_DELAY_S", 0.0)
     attempts = 0
