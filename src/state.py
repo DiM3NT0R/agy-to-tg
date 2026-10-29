@@ -39,6 +39,9 @@ class ChatState:
     print_timeout: str = "" # e.g. "30m"
     conversation_id: str = "" # UUID of the currently selected conversation
     projects: list[dict[str, str]] = field(default_factory=list) # [{'id': '...', 'snippet': '...'}]
+    voice: str = ""  # "" → default "filipp"
+    voice_speed: str = ""  # "" → default "1.1"
+    auto_voice: bool = False  # True → speak replies automatically
 
 @dataclass
 class State:
@@ -106,6 +109,9 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         print_timeout=raw.get("print_timeout", "") if isinstance(raw.get("print_timeout"), str) else "",
         conversation_id=raw.get("conversation_id", "") if isinstance(raw.get("conversation_id"), str) else "",
         projects=projects,
+        voice=raw.get("voice", "") if isinstance(raw.get("voice"), str) else "",
+        voice_speed=raw.get("voice_speed", "") if isinstance(raw.get("voice_speed"), str) else "",
+        auto_voice=bool(raw.get("auto_voice", False)),
     )
 
 

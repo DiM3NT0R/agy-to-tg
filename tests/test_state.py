@@ -106,3 +106,19 @@ def test_load_state_keeps_photo_enabled(tmp_path: Path) -> None:
     )
     state = load_state(p, tmp_path / "chats")
     assert state.chats[123].photo_enabled is False
+
+
+def test_load_state_keeps_voice_settings(tmp_path: Path) -> None:
+    chat_dir = str(tmp_path / "chats" / "123")
+    (tmp_path / "chats" / "123").mkdir(parents=True)
+    p = tmp_path / "state.json"
+    p.write_text(
+        '{"last_update_id": 1, "chats": {'
+        '"123": {"chat_dir": "' + chat_dir + '", "voice": "ermil", "voice_speed": "1.3", "auto_voice": true}'
+        '}}'
+    )
+    state = load_state(p, tmp_path / "chats")
+    assert state.chats[123].voice == "ermil"
+    assert state.chats[123].voice_speed == "1.3"
+    assert state.chats[123].auto_voice is True
+

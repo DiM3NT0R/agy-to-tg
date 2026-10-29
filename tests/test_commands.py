@@ -227,3 +227,78 @@ async def test_command_diff(tmp_path: Path, monkeypatch) -> None:
     assert reply_large.document_filename == "changes.patch"
 
 
+async def test_command_pwd(tmp_path: Path) -> None:
+    cs = _state()
+    cs.chat_dir = str(tmp_path)
+    reply = await handle_text_command(_FakeMsg("/pwd"), cs, _cfg())
+    assert reply is not None
+    assert "Текущая рабочая папка чата" in reply.text
+
+
+async def test_command_compact_and_callback() -> None:
+    cs = _state()
+    # No session
+    reply_empty = await handle_text_command(_FakeMsg("/compact"), cs, _cfg())
+    assert reply_empty is not None
+    assert "нет активной сессии" in reply_empty.text
+
+    # With active session
+    cs.has_session = True
+    cs.conversation_id = "test-uuid"
+    cs.turn_count = 5
+    reply_active = await handle_text_command(_FakeMsg("/compact"), cs, _cfg())
+    assert reply_active is not None
+    assert "Сжатие контекста сессии" in reply_active.text
+    assert reply_active.keyboard is not None
+
+    # Callback do_compact
+    cq = CallbackQuery(update_id=2, callback_query_id="q2", chat_id=42, user_id=42, message_id=1, data="do_compact")
+    cb_reply = await handle_callback(cq, cs, _cfg())
+    assert "Контекст сессии сжат" in cb_reply.text
+    assert cs.has_session is False
+    assert cs.conversation_id == ""
+    assert cs.turn_count == 0
+
+
+async def test_voice_command_and_callbacks() -> None:
+    cs = _state()
+    cfg = _cfg()
+
+    # /voice menu
+    reply_menu = await handle_text_command(_FakeMsg("/voice"), cs, cfg)
+    assert reply_menu is not None
+    assert "Настройки голосовой озвучки" in reply_menu.text
+    assert reply_menu.keyboard is not None
+
+    # /voice <name> direct set
+    reply_set = await handle_text_command(_FakeMsg("/voice alena"), cs, cfg)
+    assert reply_set is not None
+    assert "alena" in reply_set.text
+    assert cs.voice == "alena"
+
+    # Callback nav:voice
+    cq_nav = CallbackQuery(update_id=3, callback_query_id="q3", chat_id=42, user_id=42, message_id=1, data="nav:voice")
+    nav_reply = await handle_callback(cq_nav, cs, cfg)
+    assert "Настройки голосовой озвучки" in nav_reply.text
+
+    # Callback v:ermil
+    cq_v = CallbackQuery(update_id=4, callback_query_id="q4", chat_id=42, user_id=42, message_id=1, data="v:ermil")
+    v_reply = await handle_callback(cq_v, cs, cfg)
+    assert cs.voice == "ermil"
+    assert "ermil" in v_reply.toast
+
+    # Callback vs:1.3
+    cq_vs = CallbackQuery(update_id=5, callback_query_id="q5", chat_id=42, user_id=42, message_id=1, data="vs:1.3")
+    vs_reply = await handle_callback(cq_vs, cs, cfg)
+    assert cs.voice_speed == "1.3"
+    assert "1.3x" in vs_reply.toast
+
+    # Callback v_auto:toggle
+    assert cs.auto_voice is False
+    cq_auto = CallbackQuery(update_id=6, callback_query_id="q6", chat_id=42, user_id=42, message_id=1, data="v_auto:toggle")
+    auto_reply = await handle_callback(cq_auto, cs, cfg)
+    assert cs.auto_voice is True
+    assert "ВКЛ" in auto_reply.toast
+
+
+

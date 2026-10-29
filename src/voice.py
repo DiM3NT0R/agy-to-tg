@@ -163,7 +163,9 @@ def _convert_mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes | None:
     return None
 
 
-async def _synthesize_yandex(text: str, api_key: str, *, voice: str = "filipp") -> tuple[bytes, str]:
+async def _synthesize_yandex(
+    text: str, api_key: str, *, voice: str = "filipp", speed: str = "1.1"
+) -> tuple[bytes, str]:
     """Synthesize speech using Yandex SpeechKit Neural TTS (returns native OGG Opus)."""
     chunks = _split_tts_chunks(text, max_chars=4500)
     if not chunks:
@@ -174,9 +176,9 @@ async def _synthesize_yandex(text: str, api_key: str, *, voice: str = "filipp") 
         data = {
             "text": chunks[0],
             "lang": "ru-RU",
-            "voice": voice,
+            "voice": voice or "filipp",
             "format": "oggopus",
-            "speed": "1.1",
+            "speed": speed or "1.1",
         }
         resp = await client.post(YANDEX_TTS_URL, headers=headers, data=data)
         if resp.status_code != 200 or not resp.content:
@@ -185,7 +187,7 @@ async def _synthesize_yandex(text: str, api_key: str, *, voice: str = "filipp") 
 
 
 async def _synthesize_cartesia(
-    text: str, api_key: str, *, voice_id: str = CARTESIA_DEFAULT_VOICE_ID
+    text: str, api_key: str, *, voice_id: str = CARTESIA_DEFAULT_VOICE_ID, speed: str = "1.0"
 ) -> tuple[bytes, str]:
     """Synthesize speech using Cartesia Sonic 3.5 Neural TTS."""
     chunks = _split_tts_chunks(text, max_chars=2500)
@@ -201,8 +203,7 @@ async def _synthesize_cartesia(
         "transcript": chunks[0],
         "voice": {
             "mode": "id",
-            "id": voice_id,
-            "__experimental_controls": {"speed": 0.1},
+            "id": voice_id or CARTESIA_DEFAULT_VOICE_ID,
         },
         "output_format": {
             "container": "mp3",
@@ -226,6 +227,8 @@ async def synthesize_speech(
     text: str,
     *,
     lang: str = "ru",
+    voice: str = "filipp",
+    speed: str = "1.1",
     yandex_api_key: str = "",
     cartesia_api_key: str = "",
 ) -> tuple[bytes, str]:
@@ -238,11 +241,15 @@ async def synthesize_speech(
     """
     if yandex_api_key:
         try:
-            return await _synthesize_yandex(text, yandex_api_key)
+            return await _synthesize_yandex(text, yandex_api_key, voice=voice, speed=speed)
         except Exception as exc:
             LOG.warning("Yandex TTS failed, trying next provider: %s", exc)
 
     if cartesia_api_key:
+        try:
+            return await _synthesize_cartesia(text, cartesia_api_key, speed=speed)
+        except Exception as exc:
+            LOG.warning("Cartesia TTS failed, falling back to Google TTS: %s", exc)
         try:
             return await _synthesize_cartesia(text, cartesia_api_key)
         except Exception as exc:

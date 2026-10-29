@@ -265,3 +265,105 @@ async def test_tts_callback_synthesizes_and_sends_voice(tmp_path: Any, monkeypat
 
     assert len(sent_voices) == 1
     assert sent_voices[0] == (10, b"FAKE_MP3_AUDIO", "audio/mpeg", 77)
+
+
+@pytest.mark.asyncio
+async def test_auto_voice_synthesizes_automatically_on_turn(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    sent_voices: list[tuple[int, bytes, str, int | None]] = []
+    seen_tts_kwargs: list[dict[str, Any]] = []
+
+    class FakeTG:
+        def __init__(self) -> None:
+            self.updates = [
+                [
+                    {
+                        "update_id": 900,
+                        "message": {
+                            "message_id": 50,
+                            "date": 0,
+                            "chat": {"id": 10, "type": "private"},
+                            "from": {"id": 42, "is_bot": False, "first_name": "T"},
+                            "text": "Скажи привет",
+                        },
+                    }
+                ]
+            ]
+
+        async def __aenter__(self) -> "FakeTG":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]:
+            if self.updates:
+                return self.updates.pop(0)
+            import asyncio
+            await asyncio.sleep(0)
+            return []
+
+        async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> int | None:
+            return 101
+
+        async def edit_message_text(self, chat_id: int, message_id: int, text: str, **kwargs: Any) -> None:
+            return None
+
+        async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
+            return None
+
+        async def send_chat_action(self, chat_id: int, action: str = "typing", **kwargs: Any) -> None:
+            return None
+
+        async def delete_message(self, chat_id: int, message_id: int) -> None:
+            return None
+
+        async def send_voice(
+            self,
+            chat_id: int,
+            voice_bytes: bytes,
+            *,
+            mime_type: str = "audio/ogg",
+            caption: str = "",
+            message_thread_id: int | None = None,
+            reply_to_message_id: int | None = None,
+        ) -> int | None:
+            sent_voices.append((chat_id, voice_bytes, mime_type, reply_to_message_id))
+            return 102
+
+    async def fake_synthesize(text: str, **kwargs: Any) -> tuple[bytes, str]:
+        seen_tts_kwargs.append(kwargs)
+        return b"AUTO_VOICE_BYTES", "audio/ogg"
+
+    async def fake_execute_agy(tg: Any, chat_id: int, prompt: str, msg: Any, cs: Any, cfg: Any, agy_path: str) -> tuple[str, int]:
+        cs.auto_voice = True
+        cs.voice = "zahar"
+        cs.voice_speed = "1.3"
+        return "Привет, человек!", 0
+
+    monkeypatch.setattr("src.daemon.synthesize_speech", fake_synthesize)
+    monkeypatch.setattr("src.daemon.execute_agy", fake_execute_agy)
+
+    import asyncio
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+
+    cfg = Config(
+        telegram=TelegramConfig(bot_token="T", allowed_user_ids=[42]),
+        agy=AgyConfig(default_workdir="/tmp", model="", mode="code"),
+    )
+    await run(
+        cfg=cfg,
+        state_path=tmp_path / "state.json",
+        chats_root=tmp_path / "chats",
+        tg=FakeTG(),
+        agy_path="/usr/bin/true",
+        info=DaemonInfo(bot_username="@bot", started_at=0.0, agy_version="1.0"),
+        stop_event=stop,
+    )
+
+    assert len(sent_voices) == 1
+    assert sent_voices[0] == (10, b"AUTO_VOICE_BYTES", "audio/ogg", 101)
+    assert len(seen_tts_kwargs) == 1
+    assert seen_tts_kwargs[0]["voice"] == "zahar"
+    assert seen_tts_kwargs[0]["speed"] == "1.3"
+
