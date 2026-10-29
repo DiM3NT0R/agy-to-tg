@@ -35,7 +35,7 @@ WELCOME_TEXT = (
     "👋 Привет! Я твой Telegram-бот для Antigravity.\n\n"
     "Отправь мне любое сообщение, и я передам его агенту agy. "
     "Для каждого чата или темы создается своя отдельная сессия.\n\n"
-    "Команды: /start · /help · /limits · /diff · /files · /settings · /model · /mode · /reset"
+    "Команды: /start · /help · /limits · /diff · /files · /voice · /compact · /pwd · /settings · /model · /mode · /reset"
 )
 
 HELP_TEXT = (
@@ -46,6 +46,9 @@ HELP_TEXT = (
     "/diff     — просмотр изменений git в рабочей папке\n"
     "/files    — список файлов проекта и инбокса\n"
     "/get      — скачать файл из рабочей папки (/get имя_файла)\n"
+    "/compact  — сжатие длинного контекста сессии для экономии квоты\n"
+    "/voice    — настройки голоса, скорости и автоозвучки\n"
+    "/pwd      — показать рабочую папку чата\n"
     "/status   — сводка по системе и текущему чату\n"
     "/settings — панель управления с кнопками\n"
     "/model    — выбрать модель (переопределяет настройки для чата)\n"
@@ -126,11 +129,68 @@ def _settings_keyboard() -> InlineKeyboard:
             {"text": "📁 Диалоги", "callback_data": "nav:projects"},
         ],
         [
+            {"text": "🎙 Голос и озвучка", "callback_data": "nav:voice"},
             {"text": "📊 Лимиты и квоты", "callback_data": "nav:limits"},
-            {"text": "🧹 Сбросить сессию", "callback_data": "R"},
         ],
-        [{"text": "🔄 Обновить", "callback_data": "nav:settings"}],
+        [
+            {"text": "🧹 Сбросить сессию", "callback_data": "R"},
+            {"text": "🔄 Обновить", "callback_data": "nav:settings"},
+        ],
     ]
+
+
+VOICE_CHOICES = [
+    ("filipp", "👨 Филипп (нейтральный)"),
+    ("ermil", "👨 Ермил (дружелюбный)"),
+    ("zahar", "👨 Захар (деловой)"),
+    ("alena", "👩 Алёна (мягкий)"),
+    ("dasha", "👩 Даша (энергичный)"),
+    ("jane", "👩 Джейн (яркий)"),
+]
+
+SPEED_CHOICES = [
+    ("1.0", "1.0x"),
+    ("1.15", "1.15x"),
+    ("1.3", "1.3x"),
+]
+
+
+def _voice_keyboard(current_voice: str, current_speed: str, auto_voice: bool) -> InlineKeyboard:
+    rows: InlineKeyboard = []
+    # Voice buttons
+    for vid, vtitle in VOICE_CHOICES:
+        cur = current_voice or "filipp"
+        marker = "● " if vid == cur else "○ "
+        rows.append([{"text": f"{marker}{vtitle}", "callback_data": f"v:{vid}"}])
+
+    # Speeds
+    speed_row = []
+    cur_speed = current_speed or "1.15"
+    for spd, stitle in SPEED_CHOICES:
+        marker = "● " if (spd == cur_speed or (cur_speed == "1.1" and spd == "1.15")) else "○ "
+        speed_row.append({"text": f"{marker}{stitle}", "callback_data": f"vs:{spd}"})
+    rows.append(speed_row)
+
+    # Auto-voice toggle
+    av_text = "🔊 Автоозвучка: ВКЛ" if auto_voice else "🔇 Автоозвучка: ВЫКЛ"
+    rows.append([{"text": av_text, "callback_data": "v_auto:toggle"}])
+
+    rows.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
+    return rows
+
+
+def _render_voice_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
+    cur_voice = cs.voice or "filipp"
+    cur_speed = cs.voice_speed or "1.15"
+    av_status = "ВКЛ (каждый ответ озвучивается)" if cs.auto_voice else "ВЫКЛ (только по кнопке «🔊 Озвучить»)"
+    text = (
+        "🎙 <b>Настройки голосовой озвучки (TTS)</b>\n\n"
+        f"Текущий голос: <code>{cur_voice}</code>\n"
+        f"Скорость речи: <b>{cur_speed}x</b>\n"
+        f"Автоматическая озвучка: <b>{av_status}</b>\n\n"
+        "Выберите голос и параметры ниже:"
+    )
+    return BridgeReply(text=text, keyboard=_voice_keyboard(cs.voice, cs.voice_speed, cs.auto_voice))
 
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
@@ -393,7 +453,33 @@ async def handle_text_command(
             return BridgeReply("💭 Процесс мышления уже скрыт.")
         return BridgeReply("💭 Процесс мышления не поддерживается.")
     if cmd == "/compact":
-        return BridgeReply("🗜️ Сжатие контекста недоступно.")
+        if not cs.has_session or not cs.conversation_id:
+            return BridgeReply("ℹ️ В текущем чате нет активной сессии для сжатия.")
+        return BridgeReply(
+            f"🗜️ <b>Сжатие контекста сессии</b> (ходов: {cs.turn_count})\n\n"
+            "Сжатие архивирует текущий диалог и начинает новую чистую сессию. "
+            "Это снижает расход токенов до 90% и предотвращает лимиты квоты.\n\n"
+            "Нажмите кнопку ниже для подтверждения:",
+            keyboard=[
+                [
+                    {"text": "✅ Сжать сессию", "callback_data": "do_compact"},
+                    {"text": "❌ Отмена", "callback_data": "nav:settings"},
+                ]
+            ],
+        )
+    if cmd == "/pwd":
+        home = os.path.expanduser("~")
+        pretty_dir = cs.chat_dir.replace(home, "~", 1)
+        return BridgeReply(f"📂 <b>Текущая рабочая папка чата:</b>\n<code>{pretty_dir}</code>")
+    if cmd == "/voice":
+        if args:
+            v_clean = args.strip().lower()
+            valid_voices = {vid for vid, _ in VOICE_CHOICES}
+            if v_clean in valid_voices:
+                cs.voice = v_clean
+                return BridgeReply(f"🎙 Голос озвучки установлен на <code>{v_clean}</code>")
+            return BridgeReply(f"⚠️ Неизвестный голос: {args}\nДоступные: filipp, ermil, zahar, alena, dasha, jane")
+        return _render_voice_picker(cs, cfg)
     if cmd == "/image":
         mode = args.strip().lower()
         if mode in ("on", "true", "1"):
@@ -522,6 +608,8 @@ async def handle_callback(
         return _render_model_picker(cs, cfg)
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
+    if data == "nav:voice":
+        return _render_voice_picker(cs, cfg)
     if data == "nav:effort":
         return _render_effort_picker(cs, cfg)
     if data == "nav:projects" or data.startswith("nav:projects:"):
@@ -593,5 +681,49 @@ async def handle_callback(
             toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+    if data.startswith("v:"):
+        choice = data[2:]
+        valid_voices = {vid for vid, _ in VOICE_CHOICES}
+        if choice in valid_voices:
+            cs.voice = choice
+            toast = f"Голос: {choice}"
+        else:
+            toast = "Неизвестный голос"
+        rep = _render_voice_picker(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+    if data.startswith("vs:"):
+        choice = data[3:]
+        valid_speeds = {spd for spd, _ in SPEED_CHOICES}
+        if choice in valid_speeds:
+            cs.voice_speed = choice
+            toast = f"Скорость: {choice}x"
+        else:
+            toast = "Неизвестная скорость"
+        rep = _render_voice_picker(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+    if data == "v_auto:toggle":
+        cs.auto_voice = not cs.auto_voice
+        toast = "Автоозвучка ВКЛ" if cs.auto_voice else "Автоозвучка ВЫКЛ"
+        rep = _render_voice_picker(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+    if data == "do_compact":
+        cs.has_session = False
+        cs.conversation_id = ""
+        cs.turn_count = 0
+        kb: InlineKeyboard = [
+            [{"text": "📁 Диалоги", "callback_data": "nav:projects"}],
+            [{"text": "⚙️ Настройки", "callback_data": "nav:settings"}],
+        ]
+        return BridgeReply(
+            "🗜️ <b>Контекст сессии сжат!</b>\n\n"
+            "Предыдущая история сохранена в проекте, а текущий диалог сброшен. "
+            "Следующее сообщение начнет чистый контекст с минимальным потреблением токенов квоты.",
+            keyboard=kb,
+            toast="Контекст сжат",
+        )
 
     return _render_settings(cs, cfg)

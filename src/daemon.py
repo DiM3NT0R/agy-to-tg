@@ -211,6 +211,24 @@ async def _do_turn(
         )
         if sent_mid and reply:
             cache_reply_text(msg.chat_id, sent_mid, reply)
+            if code == 0 and getattr(cs, "auto_voice", False):
+                try:
+                    audio_bytes, mime_type = await synthesize_speech(
+                        reply,
+                        voice=getattr(cs, "voice", "") or "filipp",
+                        speed=getattr(cs, "voice_speed", "") or "1.1",
+                        yandex_api_key=cfg.telegram.yandex_api_key,
+                        cartesia_api_key=cfg.telegram.cartesia_api_key,
+                    )
+                    await tg.send_voice(  # type: ignore[attr-defined]
+                        msg.chat_id,
+                        audio_bytes,
+                        mime_type=mime_type,
+                        message_thread_id=msg.message_thread_id,
+                        reply_to_message_id=sent_mid,
+                    )
+                except Exception as exc:
+                    LOG.error("Auto-voice TTS failed chat=%s: %s", msg.chat_id, exc)
     except Exception as err:
         LOG.error("sendMessage failed chat=%s: %s", msg.chat_id, err)
 
@@ -344,6 +362,8 @@ async def _process_callback(
         await tg.answer_callback_query(cq.callback_query_id, text="Not authorized")
         return
 
+    cs = _ensure_chat_state(state, cq.chat_id, cq.message_thread_id, chats_root)
+
     if cq.data == "tts" or cq.data.startswith("tts:"):
         raw_text = get_cached_reply_text(cq.chat_id, cq.message_id) or cq.message_text
         if not raw_text:
@@ -363,6 +383,8 @@ async def _process_callback(
         try:
             audio_bytes, mime_type = await synthesize_speech(
                 raw_text,
+                voice=getattr(cs, "voice", "") or "filipp",
+                speed=getattr(cs, "voice_speed", "") or "1.1",
                 yandex_api_key=cfg.telegram.yandex_api_key,
                 cartesia_api_key=cfg.telegram.cartesia_api_key,
             )
@@ -385,7 +407,6 @@ async def _process_callback(
                 pass
         return
 
-    cs = _ensure_chat_state(state, cq.chat_id, cq.message_thread_id, chats_root)
     reply = await handle_callback(cq, cs, cfg)
     save_state(state_path, state)
 
@@ -536,6 +557,9 @@ async def _detect_bot_username(cfg: Config) -> str:
         {"command": "diff", "description": "Просмотр изменений git в проекте"},
         {"command": "files", "description": "Файлы рабочей папки чата"},
         {"command": "get", "description": "Скачать файл из проекта (/get имя)"},
+        {"command": "compact", "description": "Сжать контекст сессии для экономии квоты"},
+        {"command": "voice", "description": "Настройки голоса и озвучки (TTS)"},
+        {"command": "pwd", "description": "Показать рабочую папку чата"},
         {"command": "settings", "description": "Настройки чата и диалоги"},
         {"command": "model", "description": "Выбрать модель ИИ"},
         {"command": "mode", "description": "Режим работы (code / plan)"},
@@ -544,7 +568,6 @@ async def _detect_bot_username(cfg: Config) -> str:
         {"command": "stop", "description": "Остановить текущий ответ"},
         {"command": "reset", "description": "Сбросить текущую сессию"},
         {"command": "image", "description": "Вкл/выкл обработку фото"},
-        {"command": "files", "description": "Список недавних файлов"},
         {"command": "update", "description": "Проверить обновления из GitHub"},
     ]
     try:
