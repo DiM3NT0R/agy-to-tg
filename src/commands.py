@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import os
+import re
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src.media import clean_inbox, list_inbox
+from src.media import clean_inbox, list_inbox, list_workspace_files, safe_resolve_workspace_file
 from src.models import FALLBACK_MODELS, get_available_models
 from src.quota import fetch_quota_summary, render_limits_card
 from src.state import is_valid_model
@@ -31,7 +35,7 @@ WELCOME_TEXT = (
     "👋 Привет! Я твой Telegram-бот для Antigravity.\n\n"
     "Отправь мне любое сообщение, и я передам его агенту agy. "
     "Для каждого чата или темы создается своя отдельная сессия.\n\n"
-    "Команды: /start · /help · /limits · /status · /settings · /model · /mode · /reset"
+    "Команды: /start · /help · /limits · /diff · /files · /settings · /model · /mode · /reset"
 )
 
 HELP_TEXT = (
@@ -39,6 +43,9 @@ HELP_TEXT = (
     "Отправьте любой текст для общения с agy.\n\n"
     "Команды:\n"
     "/limits   — просмотр лимитов моделей и таймеров сброса\n"
+    "/diff     — просмотр изменений git в рабочей папке\n"
+    "/files    — список файлов проекта и инбокса\n"
+    "/get      — скачать файл из рабочей папки (/get имя_файла)\n"
     "/status   — сводка по системе и текущему чату\n"
     "/settings — панель управления с кнопками\n"
     "/model    — выбрать модель (переопределяет настройки для чата)\n"
@@ -48,7 +55,7 @@ HELP_TEXT = (
     "/reset    — начать чистую сессию agy для этого чата\n"
     "/info     — то же, что и /status\n"
     "/image on|off — вкл/выкл обработку фото\n"
-    "/files    — список недавних файлов\n"
+    "/update   — проверить обновления из GitHub\n"
     "/start, /help — показать эти сообщения\n\n"
     "Настройки для конкретного чата имеют приоритет над config.json."
 )
@@ -56,11 +63,13 @@ HELP_TEXT = (
 
 @dataclass(frozen=True)
 class BridgeReply:
-    """Daemon's structured reply: text, optional inline keyboard, optional toast."""
+    """Daemon's structured reply: text, optional inline keyboard, optional toast, optional document."""
 
-    text: str
+    text: str = ""
     keyboard: InlineKeyboard | None = None
     toast: str = ""
+    document_bytes: bytes | None = None
+    document_filename: str = ""
 
 
 def _effective_model(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
@@ -278,6 +287,43 @@ def _render_mode_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     )
 
 
+async def _run_git_diff(workdir: str, args: str = "") -> tuple[str, str]:
+    """Run git diff in workdir safely."""
+    try:
+        check_proc = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+        if check_proc.returncode != 0:
+            return "", "В рабочей папке чата нет репозитория git."
+
+        cmd = ["git", "diff"]
+        if args.strip():
+            clean_arg = args.strip().split()[0]
+            if re.match(r"^[a-zA-Z0-9_\-\.~^]+$", clean_arg):
+                cmd.append(clean_arg)
+
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return "", proc.stderr.strip() or "Ошибка выполнения git diff"
+        return proc.stdout, ""
+    except Exception as exc:
+        return "", f"Не удалось выполнить git diff: {exc}"
+
+
 async def handle_text_command(
     msg: "InboundMessage",
     cs: "ChatState",
@@ -358,11 +404,65 @@ async def handle_text_command(
             return BridgeReply("📸 Обработка фото: ВЫКЛ")
         return BridgeReply("📸 Переключение обработки фото недоступно.")
     if cmd == "/files":
-        wd = cfg.agy.default_workdir if hasattr(cfg.agy, "default_workdir") else ""
-        files = list_inbox(wd)
-        if not files:
-            return BridgeReply("📂 Папка пуста.")
-        return BridgeReply("📂 Недавние файлы:\n" + "\n".join(f"• {f}" for f in files))
+        ws_files = list_workspace_files(cs.chat_dir, limit=10)
+        inbox_files = list_inbox(cs.chat_dir, limit=5)
+        if not ws_files and not inbox_files:
+            return BridgeReply("📂 Рабочая папка пуста (нет файлов).")
+
+        lines = ["📂 <b>Файлы в рабочей папке:</b>"]
+        kb_rows: InlineKeyboard = []
+        if ws_files:
+            lines.append("\n<b>Файлы проекта:</b>")
+            for fname, sz in ws_files:
+                sz_str = f"{sz}B" if sz < 1024 else f"{sz // 1024}KB"
+                lines.append(f"• <code>{html.escape(fname)}</code> ({sz_str})")
+                if len(kb_rows) < 6:
+                    short_name = Path(fname).name
+                    if len(short_name) > 20:
+                        short_name = short_name[:17] + "..."
+                    kb_rows.append([{"text": f"📥 Скачать {short_name}", "callback_data": f"getfile:{fname}"}])
+
+        if inbox_files:
+            lines.append("\n<b>Входящие (от пользователя):</b>")
+            for f in inbox_files:
+                lines.append(f"• {html.escape(f)}")
+
+        lines.append("\n💡 <i>Для скачивания используйте кнопки выше или команду /get имя_файла</i>")
+        return BridgeReply("\n".join(lines), keyboard=kb_rows if kb_rows else None)
+    if cmd in ("/get", "/file", "/download"):
+        if not args:
+            return BridgeReply("ℹ️ Укажите имя файла: <code>/get имя_файла</code>\nСписок файлов: /files")
+        resolved = safe_resolve_workspace_file(cs.chat_dir, args.strip())
+        if not resolved or not resolved.exists():
+            return BridgeReply(f"⚠️ Файл <code>{html.escape(args.strip())}</code> не найден в рабочей папке.")
+        try:
+            data = resolved.read_bytes()
+            size_kb = len(data) / 1024
+            return BridgeReply(
+                text=f"📄 Файл: <code>{html.escape(resolved.name)}</code> ({size_kb:.1f} KB)",
+                document_bytes=data,
+                document_filename=resolved.name,
+            )
+        except Exception as exc:
+            return BridgeReply(f"⚠️ Ошибка чтения файла: {exc}")
+    if cmd == "/diff":
+        diff_output, err = await _run_git_diff(cs.chat_dir, args)
+        if err:
+            return BridgeReply(f"ℹ️ {err}")
+        if not diff_output.strip():
+            return BridgeReply("✅ Рабочая копия чиста (нет изменений в git).")
+
+        if len(diff_output) <= 3500:
+            return BridgeReply(
+                f"📝 <b>Изменения git diff:</b>\n<pre><code class=\"language-diff\">{html.escape(diff_output)}</code></pre>"
+            )
+        else:
+            patch_bytes = diff_output.encode("utf-8")
+            return BridgeReply(
+                text="📝 <b>Git Diff</b> превышает лимит сообщения Telegram (отправлен файлом changes.patch):",
+                document_bytes=patch_bytes,
+                document_filename="changes.patch",
+            )
     if cmd == "/queue":
         import src.daemon
         sub = args.strip().lower()
@@ -400,6 +500,21 @@ async def handle_callback(
         return BridgeReply(render_status(cs, cfg))
     if data == "nav:settings":
         return _render_settings(cs, cfg)
+    if data.startswith("getfile:"):
+        relpath = data.partition(":")[2]
+        resolved = safe_resolve_workspace_file(cs.chat_dir, relpath)
+        if not resolved or not resolved.exists():
+            return BridgeReply("⚠️ Файл не найден", toast="Файл не найден")
+        try:
+            data_bytes = resolved.read_bytes()
+            return BridgeReply(
+                text=f"📄 Отправляю <code>{html.escape(resolved.name)}</code>",
+                toast=f"Скачивание {resolved.name}",
+                document_bytes=data_bytes,
+                document_filename=resolved.name,
+            )
+        except Exception as exc:
+            return BridgeReply(f"⚠️ Ошибка чтения: {exc}", toast="Ошибка чтения")
     if data == "nav:limits":
         qs = await fetch_quota_summary()
         return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard(), toast="Лимиты обновлены")

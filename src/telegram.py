@@ -577,6 +577,33 @@ class TelegramClient:
         mid = res.get("message_id")
         return mid if isinstance(mid, int) else None
 
+    async def send_document(
+        self,
+        chat_id: int,
+        document_bytes: bytes,
+        filename: str,
+        *,
+        caption: str = "",
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
+        assert self._client is not None
+        data_fields: dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            data_fields["caption"] = caption[:1024]
+        if message_thread_id is not None:
+            data_fields["message_thread_id"] = str(message_thread_id)
+        if reply_to_message_id is not None:
+            data_fields["reply_to_message_id"] = str(reply_to_message_id)
+        files = {"document": (filename, document_bytes, "application/octet-stream")}
+        r = await self._client.post(f"{self._base}/sendDocument", data=data_fields, files=files)
+        resp = r.json()
+        if not resp.get("ok"):
+            raise RuntimeError(f"sendDocument failed: {resp.get('description')}")
+        res = resp.get("result") or {}
+        mid = res.get("message_id")
+        return mid if isinstance(mid, int) else None
+
     async def set_webhook(self, url: str, secret_token: str = "") -> dict[str, Any]:
         assert self._client is not None
         params: dict[str, Any] = {"url": url}

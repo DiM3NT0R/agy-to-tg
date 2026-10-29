@@ -275,3 +275,42 @@ async def test_prompt_both_text_and_media(tmp_path: Path) -> None:
     result = await build_media_prompt(msg, tg, _FakeState(str(tmp_path)), _FakeCfg())
     assert result is not None
     assert result.startswith("analyze [Photo:")
+
+
+def test_workspace_files_and_safe_resolve(tmp_path: Path) -> None:
+    from src.media import list_workspace_files, safe_resolve_workspace_file
+
+    # Create dummy files and excluded dirs
+    (tmp_path / "main.py").write_text("print('hello')")
+    (tmp_path / "notes.txt").write_text("my notes")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "util.py").write_text("def foo(): pass")
+
+    # Excluded directories
+    inbox = tmp_path / ".bridge-inbox"
+    inbox.mkdir()
+    (inbox / "temp.jpg").write_bytes(b"123")
+    pyc = tmp_path / "__pycache__"
+    pyc.mkdir()
+    (pyc / "c.pyc").write_bytes(b"abc")
+
+    files = list_workspace_files(str(tmp_path))
+    filenames = [fname for fname, _ in files]
+    assert "main.py" in filenames
+    assert "notes.txt" in filenames
+    assert "sub/util.py" in filenames
+    assert not any(".bridge-inbox" in f for f in filenames)
+    assert not any("__pycache__" in f for f in filenames)
+
+    # Safe resolve
+    resolved = safe_resolve_workspace_file(str(tmp_path), "main.py")
+    assert resolved is not None
+    assert resolved.name == "main.py"
+
+    resolved_sub = safe_resolve_workspace_file(str(tmp_path), "sub/util.py")
+    assert resolved_sub is not None
+
+    # Path traversal attack
+    assert safe_resolve_workspace_file(str(tmp_path), "../etc/passwd") is None
+    assert safe_resolve_workspace_file(str(tmp_path), "nonexistent.py") is None
