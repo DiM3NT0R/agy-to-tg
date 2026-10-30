@@ -179,6 +179,12 @@ VOICE_INTENTS: dict[str, str] = {
     "стоп": "/stop",
     "остановись": "/stop",
     "хватит": "/stop",
+    # restart
+    "перезапуск": "/restart",
+    "перезагрузка": "/restart",
+    "перезагрузи": "/restart",
+    "перезагрузи мост": "/restart",
+    "рестарт": "/restart",
 }
 
 
