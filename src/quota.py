@@ -18,6 +18,7 @@ import httpx
 LOG = logging.getLogger("antigravity_telegram_bridge")
 
 QUOTA_SUMMARY_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+MODELS_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
 TOKEN_FILE_PATH = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
 
 
@@ -115,33 +116,45 @@ async def fetch_quota_summary(agy_path: str = "") -> QuotaSummary:
     if not access_token:
         return QuotaSummary(groups=[], error="Токен авторизации Antigravity не найден.")
 
-    async def _do_request(tok: str) -> dict[str, Any] | int:
+    async def _do_requests(tok: str) -> tuple[dict[str, Any] | int, dict[str, Any] | None]:
         headers = {
             "Authorization": f"Bearer {tok}",
             "Content-Type": "application/json",
             "User-Agent": "antigravity-cli/1.4.8",
         }
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            resp = await client.post(QUOTA_SUMMARY_URL, headers=headers, json={})
-            if resp.status_code == 200:
-                return resp.json()
-            return resp.status_code
+            resp_quota, resp_models = await asyncio.gather(
+                client.post(QUOTA_SUMMARY_URL, headers=headers, json={}),
+                client.post(MODELS_URL, headers=headers, json={}),
+                return_exceptions=True,
+            )
+            q_res: dict[str, Any] | int = (
+                resp_quota.json()
+                if not isinstance(resp_quota, Exception) and resp_quota.status_code == 200
+                else (getattr(resp_quota, "status_code", 500) if not isinstance(resp_quota, Exception) else 500)
+            )
+            m_res: dict[str, Any] | None = (
+                resp_models.json()
+                if not isinstance(resp_models, Exception) and resp_models.status_code == 200
+                else None
+            )
+            return q_res, m_res
 
-    result = await _do_request(access_token)
-    if result == 401:
+    res_quota, res_models = await _do_requests(access_token)
+    if res_quota == 401 or (isinstance(res_models, int) and res_models == 401):
         # Token expired; refresh via CLI and retry once
         access_token, email = await _refresh_token_via_cli(agy_path)
         if access_token:
-            result = await _do_request(access_token)
+            res_quota, res_models = await _do_requests(access_token)
 
-    if isinstance(result, int):
+    if isinstance(res_quota, int):
         return QuotaSummary(
             groups=[],
             user_email=email,
-            error=f"Ошибка API квот (HTTP {result}). Попробуйте позже.",
+            error=f"Ошибка API квот (HTTP {res_quota}). Попробуйте позже.",
         )
 
-    if not isinstance(result, dict):
+    if not isinstance(res_quota, dict):
         return QuotaSummary(
             groups=[],
             user_email=email,
@@ -149,7 +162,7 @@ async def fetch_quota_summary(agy_path: str = "") -> QuotaSummary:
         )
 
     groups: list[QuotaGroup] = []
-    for g in result.get("groups") or []:
+    for g in res_quota.get("groups") or []:
         buckets: list[QuotaBucket] = []
         for b in g.get("buckets") or []:
             buckets.append(
@@ -169,6 +182,37 @@ async def fetch_quota_summary(agy_path: str = "") -> QuotaSummary:
                 buckets=buckets,
             )
         )
+
+    # Extract Gemini 1st-party models quota from fetchAvailableModels
+    if res_models and isinstance(res_models, dict):
+        models_map = res_models.get("models") or {}
+        gemini_qi: dict[str, Any] | None = None
+        for mid, mdata in models_map.items():
+            if "gemini" in str(mid).lower():
+                qi = mdata.get("quotaInfo")
+                if isinstance(qi, dict) and "remainingFraction" in qi:
+                    gemini_qi = qi
+                    break
+
+        if gemini_qi:
+            rf = float(gemini_qi.get("remainingFraction", 1.0))
+            rt = str(gemini_qi.get("resetTime") or "")
+            groups.append(
+                QuotaGroup(
+                    display_name="Модели Gemini (Google 1st-Party)",
+                    description="В группе: Gemini 4 Argon, Gemini 3.8 Flash, Pro",
+                    buckets=[
+                        QuotaBucket(
+                            bucket_id="gemini-rolling",
+                            display_name="Скользящий лимит",
+                            window="rolling",
+                            reset_time=rt,
+                            remaining_fraction=rf,
+                            description="Скользящий лимит запросов Google Gemini",
+                        )
+                    ],
+                )
+            )
 
     return QuotaSummary(groups=groups, user_email=email)
 
@@ -198,9 +242,8 @@ def _format_time_left(reset_time_iso: str) -> str:
         now = datetime.now(timezone.utc)
         diff = target - now
         total_seconds = int(diff.total_seconds())
-        utc_str = target.strftime("%d.%m %H:%M UTC")
         if total_seconds <= 0:
-            return f"сейчас ({utc_str})"
+            return f"<b>сейчас</b> ({target.strftime('%H:%M UTC')})"
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
         days = hours // 24
@@ -210,12 +253,15 @@ def _format_time_left(reset_time_iso: str) -> str:
             parts.append(f"{days}д")
             if hours > 0:
                 parts.append(f"{hours}ч")
+            utc_str = target.strftime("%d.%m %H:%M UTC")
         else:
             if hours > 0:
                 parts.append(f"{hours}ч")
             if minutes > 0 or not parts:
                 parts.append(f"{minutes}мин")
-        return f"{' '.join(parts)} ({utc_str})"
+            utc_str = target.strftime("в %H:%M UTC")
+        time_part = " ".join(parts)
+        return f"<b>{time_part}</b> ({utc_str})"
     except Exception:
         return reset_time_iso
 
@@ -224,9 +270,11 @@ def _translate_bucket_name(bucket: QuotaBucket) -> str:
     window = bucket.window.lower()
     b_id = bucket.bucket_id.lower()
     if window == "weekly" or "weekly" in b_id:
-        return "Недельный лимит (Weekly)"
+        return "Недельный лимит"
     if window == "5h" or "5h" in b_id:
-        return "5-часовой лимит (5-Hour)"
+        return "5-часовой лимит"
+    if window == "rolling" or "gemini" in b_id:
+        return "Скользящий лимит"
     return bucket.display_name or bucket.bucket_id
 
 
@@ -244,7 +292,9 @@ def render_limits_card(qs: QuotaSummary) -> str:
         lines.append("ℹ️ Нет активных ограничений по группам моделей (квота не лимитирована).")
         return "\n".join(lines)
 
-    for g in qs.groups:
+    for i, g in enumerate(qs.groups):
+        if i > 0:
+            lines.append("───────────────")
         group_title = g.display_name
         if group_title.lower() == "claude and gpt models":
             group_title = "Модели Claude и GPT (3rd-Party)"
@@ -253,22 +303,17 @@ def render_limits_card(qs: QuotaSummary) -> str:
             desc = g.description
             if desc.startswith("Models within this group:"):
                 desc = desc.replace("Models within this group:", "В группе:")
-            lines.append(f"<i>{html.escape(desc)}</i>")
-        lines.append("")
+            lines.append(f"<i>{html.escape(desc)}</i>\n")
+        else:
+            lines.append("")
 
         for b in g.buckets:
             name = _translate_bucket_name(b)
             bar = _format_progress_bar(b.remaining_fraction)
             time_left = _format_time_left(b.reset_time)
-            lines.append(f"▫️ <b>{html.escape(name)}</b>:")
-            lines.append(f"Остаток: {bar}")
-            lines.append(f"⏳ Сброс через: <b>{html.escape(time_left)}</b>")
-            lines.append("")
+            lines.append(f"▫️ <b>{html.escape(name)}:</b>")
+            lines.append(bar)
+            lines.append(f"⏳ Сброс: {time_left}\n")
 
-    lines.append("───────────────")
-    lines.append("🤖 <b>Модели Gemini (Google 1st-Party)</b>")
-    lines.append("<i>В группе: Gemini 4 Argon, Gemini 3.8 Flash</i>\n")
-    lines.append("▫️ <b>Лимит квоты:</b> 🟢 <b>Без ограничений (Unlimited)</b>")
-    lines.append("💡 <i>Собственные модели Google работают на TPU-инфраструктуре Google и не имеют недельных или 5-часовых лимитов.</i>")
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
 

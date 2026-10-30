@@ -478,6 +478,7 @@ async def run(
     chats_root.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path, chats_root)
     tick = 0
+    running_turn_tasks: set[asyncio.Task] = set()
     async with tg:
         while not stop_event.is_set():
             tick += 1
@@ -525,10 +526,12 @@ async def run(
                             except Exception:
                                 pass
                     
-                    asyncio.create_task(safe_process_text(
+                    task_text = asyncio.create_task(safe_process_text(
                         msg, tg, state, state_path, chats_root,
                         cfg, agy_path, info,
                     ))
+                    running_turn_tasks.add(task_text)
+                    task_text.add_done_callback(running_turn_tasks.discard)
                     continue
 
                 cq = parse_callback_for_daemon(upd)
@@ -544,14 +547,25 @@ async def run(
                             except Exception:
                                 pass
                     
-                    asyncio.create_task(safe_process_callback(
+                    task_cb = asyncio.create_task(safe_process_callback(
                         cq, tg, state, state_path, chats_root, cfg, info,
                     ))
+                    running_turn_tasks.add(task_cb)
+                    task_cb.add_done_callback(running_turn_tasks.discard)
                     continue
 
             if not updates:
                 await asyncio.sleep(0)
             save_state(state_path, state)
+
+        if running_turn_tasks:
+            LOG.info("Shutdown requested: waiting for %d active task(s) to finish...", len(running_turn_tasks))
+            done, pending = await asyncio.wait(running_turn_tasks, timeout=60.0)
+            if pending:
+                LOG.warning("Cancelling %d remaining task(s) after shutdown timeout", len(pending))
+                for pt in pending:
+                    pt.cancel()
+        save_state(state_path, state)
 
 
 # Aliases to avoid name collisions in the loop above
