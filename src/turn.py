@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from src.agy_runner import run_agy
+from src.agy_runner import clean_system_messages, run_agy
 
 if TYPE_CHECKING:
     from src.config import Config
@@ -308,7 +308,7 @@ async def execute_agy(
     if _is_invalid_model_error(result):
         return INVALID_MODEL_EXPLANATION_MSG, result.exit_code
 
-    return result.text or "", result.exit_code
+    return clean_system_messages(result.text or ""), result.exit_code
 
 
 # Explanatory message when model/account quota is exceeded

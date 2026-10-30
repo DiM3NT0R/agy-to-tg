@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -19,6 +20,30 @@ from dataclasses import dataclass
 # Safety cap on stdout capture — prevents unbounded memory growth from
 # runaway agy output. 1MB is generous (typical replies are 1–5KB).
 _STDOUT_CAP_BYTES = 524_288  # 512 KiB
+
+# Regex patterns to sanitize internal system messages / wrapper XML tags injected by agy
+_SYSTEM_PATTERNS = [
+    re.compile(
+        r"(?:The following is a <SYSTEM_MESSAGE> not actually sent by the user[^\n]*\n*)*"
+        r"<SYSTEM_MESSAGE>.*?(?:</SYSTEM_MESSAGE>|\Z)\s*",
+        re.DOTALL | re.IGNORECASE,
+    ),
+    re.compile(r"The following is a <SYSTEM_MESSAGE>.*?(?:</SYSTEM_MESSAGE>|\Z)\s*", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<SYSTEM_MESSAGE>.*?(?:</SYSTEM_MESSAGE>|\Z)\s*", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<CONTEXT_SUMMARY>.*?(?:</CONTEXT_SUMMARY>|\Z)\s*", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<ADDITIONAL_METADATA>.*?(?:</ADDITIONAL_METADATA>|\Z)\s*", re.DOTALL | re.IGNORECASE),
+    re.compile(r"</?(?:SYSTEM_MESSAGE|USER_REQUEST|CONTEXT_SUMMARY|ADDITIONAL_METADATA)>", re.IGNORECASE),
+]
+
+
+def clean_system_messages(text: str) -> str:
+    """Strip Antigravity internal system messages, notice blocks, and XML wrapper tags."""
+    if not text:
+        return ""
+    cleaned = text
+    for pat in _SYSTEM_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    return cleaned.strip()
 
 # Reap any defunct child processes left by prior subprocess invocations
 # (bwrap sandbox can leave orphaned grand-children).
@@ -195,9 +220,10 @@ async def run_agy(
                 main_task.cancel()
                 await process.wait()
                 if on_event is None:
-                    text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
+                    raw_text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
                 else:
-                    text = (final_text or partial_text).strip()
+                    raw_text = (final_text or partial_text).strip()
+                text = clean_system_messages(raw_text)
                 if text:
                     text += "\n\n🛑 [Остановлено пользователем]"
                 stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n[stopped by user]"
@@ -209,7 +235,7 @@ async def run_agy(
                 await process.wait()
                 msg = f"agy timed out after {timeout}s"
                 stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n" + msg
-                return AgyResult(text=final_text or partial_text, exit_code=124, stderr=stderr_out)
+                return AgyResult(text=clean_system_messages(final_text or partial_text), exit_code=124, stderr=stderr_out)
             else:
                 stop_task.cancel()
         else:
@@ -221,7 +247,7 @@ async def run_agy(
         await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
         await process.wait()
         msg = f"agy timed out after {timeout}s"
-        return AgyResult(text=final_text or partial_text, exit_code=124, stderr=msg)
+        return AgyResult(text=clean_system_messages(final_text or partial_text), exit_code=124, stderr=msg)
     except (asyncio.CancelledError, BaseException):
         if process.returncode is None:
             await _terminate_process_group(signal.SIGKILL, grace_s=0.5)
@@ -259,7 +285,7 @@ async def run_agy(
             stderr_out = prefix + final_error
 
     return AgyResult(
-        text=text,
+        text=clean_system_messages(text),
         exit_code=process.returncode,
         stderr=stderr_out,
     )
