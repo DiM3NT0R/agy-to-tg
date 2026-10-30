@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
-from src.agy_runner import AgyResult
+from src.agy_runner import AgyResult, clean_system_messages
 from src.commands import BridgeReply, handle_callback, handle_text_command
 from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
@@ -169,7 +169,8 @@ async def _do_turn(
         await tg.send_chat_action(msg.chat_id, "typing", message_thread_id=msg.message_thread_id)
     except Exception:
         pass
-    text, code = await execute_agy(tg, msg.chat_id, prompt, msg, cs, cfg, agy_path)
+    raw_text, code = await execute_agy(tg, msg.chat_id, prompt, msg, cs, cfg, agy_path)
+    text = clean_system_messages(raw_text)
     if code == 124:
         record_error()
         reply = "⚠️ Время ожидания ответа истекло."

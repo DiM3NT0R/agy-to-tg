@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.agy_runner import AgyResult, run_agy
+from src.agy_runner import AgyResult, clean_system_messages, run_agy
 
 
 @pytest.fixture
@@ -181,3 +181,60 @@ def test_build_args_plan_mode_has_no_os_level_sandbox(monkeypatch) -> None:
     assert "bwrap" not in args
     assert "--sandbox" not in args
     assert "-p" in args and "run-security-scan" in args
+
+
+def test_clean_system_messages_removes_notice_and_tags() -> None:
+    raw = (
+        "The following is a <SYSTEM_MESSAGE> not actually sent by the user. "
+        "It is provided by the system as important information to pay attention to.\n\n"
+        "<SYSTEM_MESSAGE>\n"
+        "[Message] timestamp=2026-10-30T11:35:17Z sender=system priority=MESSAGE_PRIORITY_LOW "
+        "content=[Notice] All your subagents and background tasks have been stopped due to server restart.\n"
+        "</SYSTEM_MESSAGE>\n\n"
+        "Вы абсолютно точно подметили! Вот подробный ответ."
+    )
+    cleaned = clean_system_messages(raw)
+    assert cleaned == "Вы абсолютно точно подметили! Вот подробный ответ."
+
+
+def test_clean_system_messages_removes_context_and_wrapper_tags() -> None:
+    raw = (
+        "<CONTEXT_SUMMARY>Old conversation summary</CONTEXT_SUMMARY>\n"
+        "<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>\n"
+        "<USER_REQUEST>User text</USER_REQUEST>\n"
+        "Final clean answer."
+    )
+    cleaned = clean_system_messages(raw)
+    assert cleaned == "User text\nFinal clean answer."
+
+
+def test_clean_system_messages_preserves_normal_text() -> None:
+    normal = "Привет! Это обычный ответ модели без служебных тегов."
+    assert clean_system_messages(normal) == normal
+    assert clean_system_messages("") == ""
+    assert clean_system_messages("   ") == ""
+
+
+async def test_run_agy_sanitizes_system_messages(tmp_path: Path) -> None:
+    script = tmp_path / "agy-system-msg"
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null\n"
+        "echo 'The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n"
+        "<SYSTEM_MESSAGE>\n"
+        "[Notice] Subagents stopped\n"
+        "</SYSTEM_MESSAGE>\n\n"
+        "Ответ без мусора'\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    result = await run_agy(
+        prompt="test",
+        chat_dir=str(tmp_path),
+        has_session=False,
+        model="",
+        mode="code",
+        agy_path=str(script),
+    )
+    assert result.exit_code == 0
+    assert result.text == "Ответ без мусора"
+
