@@ -456,6 +456,11 @@ async def handle_text_command(
                 return BridgeReply(f"🛡 Режим изменен на {args}")
             return BridgeReply(f"⚠️ Неподдерживаемый режим: {args}")
         return _render_mode_picker(cs, cfg)
+    if cmd in ("/restart", "/reload"):
+        marker = Path.home() / ".antigravity" / "bridge" / ".restart_pending"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        return BridgeReply("🔄 Перезапускаю мост... Служба плавно перезагрузится через 1-2 секунды.")
     if cmd in ("/reset", "/new", "/clear"):
         cs.has_session = False
         cs.conversation_id = ""

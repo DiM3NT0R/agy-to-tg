@@ -490,6 +490,17 @@ async def run(
                 stop_event.set()
                 break
 
+            # Check for pending graceful restart when all turns have finished
+            restart_marker = chats_root.parent / ".restart_pending"
+            if restart_marker.exists() and not running_turn_tasks:
+                try:
+                    restart_marker.unlink()
+                except Exception:
+                    pass
+                LOG.info("Pending restart marker found at idle. Restarting daemon...")
+                stop_event.set()
+                break
+
             updates = await _fetch_updates(tg, state.last_update_id + 1)
             wh_updates = drain_webhook_updates()
             updates.extend(wh_updates)
@@ -525,6 +536,15 @@ async def run(
                                 await tg.send_message(msg.chat_id, "❌ Произошла внутренняя ошибка моста при обработке запроса. Пожалуйста, повторите попытку.", message_thread_id=msg.message_thread_id)
                             except Exception:
                                 pass
+                        finally:
+                            restart_marker = chats_root.parent / ".restart_pending"
+                            if restart_marker.exists() and len(running_turn_tasks) <= 1:
+                                try:
+                                    restart_marker.unlink()
+                                except Exception:
+                                    pass
+                                LOG.info("Pending restart detected after turn completion. Stopping loop for clean restart...")
+                                stop_event.set()
                     
                     task_text = asyncio.create_task(safe_process_text(
                         msg, tg, state, state_path, chats_root,
@@ -546,6 +566,15 @@ async def run(
                                 await tg.answer_callback_query(cq.callback_query_id, text="❌ Внутренняя ошибка. Повторите попытку.")
                             except Exception:
                                 pass
+                        finally:
+                            restart_marker = chats_root.parent / ".restart_pending"
+                            if restart_marker.exists() and len(running_turn_tasks) <= 1:
+                                try:
+                                    restart_marker.unlink()
+                                except Exception:
+                                    pass
+                                LOG.info("Pending restart detected after callback completion. Stopping loop for clean restart...")
+                                stop_event.set()
                     
                     task_cb = asyncio.create_task(safe_process_callback(
                         cq, tg, state, state_path, chats_root, cfg, info,
