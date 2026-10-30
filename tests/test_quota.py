@@ -104,7 +104,9 @@ def test_render_limits_card() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_quota_summary_success(monkeypatch) -> None:
+    monkeypatch.setattr("src.quota._QUOTA_CACHE", None)
     monkeypatch.setattr("src.quota._read_oauth_token", lambda: ("valid_token", "test@test.com"))
+    monkeypatch.setattr("src.quota._fetch_from_cli", AsyncMock(return_value=None))
 
     mock_resp = httpx.Response(
         200,
@@ -139,7 +141,9 @@ async def test_fetch_quota_summary_success(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_quota_summary_with_gemini(monkeypatch) -> None:
+    monkeypatch.setattr("src.quota._QUOTA_CACHE", None)
     monkeypatch.setattr("src.quota._read_oauth_token", lambda: ("valid_token", "test@test.com"))
+    monkeypatch.setattr("src.quota._fetch_from_cli", AsyncMock(return_value=None))
 
     async def mock_post(url, *args, **kwargs):
         if "retrieveUserQuotaSummary" in str(url):
@@ -190,6 +194,77 @@ async def test_fetch_quota_summary_with_gemini(monkeypatch) -> None:
         assert qs.groups[1].buckets[0].bucket_id == "gemini-rolling"
 
         card = render_limits_card(qs)
-        assert "Модели Gemini (Google 1st-Party)" in card
+        assert "Модели Gemini" in card
         assert "82%" in card
         assert "55%" in card
+
+
+@pytest.mark.asyncio
+async def test_fetch_from_cli_and_argon(monkeypatch) -> None:
+    monkeypatch.setattr("src.quota._read_oauth_token", lambda: ("valid_token", "test@test.com"))
+    monkeypatch.setattr("src.quota._QUOTA_CACHE", None)
+
+    mock_cli_json = json.dumps({
+        "command": {
+            "name": "usage",
+            "data": {
+                "groups": [
+                    {
+                        "name": "Gemini Models",
+                        "description": "Models within this group: Gemini Flash, Gemini Pro",
+                        "buckets": [
+                            {
+                                "id": "gemini-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "window": "weekly",
+                                "remaining_fraction": 0.73,
+                                "reset_time": "2026-11-01T08:47:41Z",
+                            }
+                        ],
+                    },
+                    {
+                        "name": "Claude and GPT models",
+                        "description": "Models within this group: Claude Opus, Claude Sonnet",
+                        "buckets": [
+                            {
+                                "id": "3p-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "window": "weekly",
+                                "remaining_fraction": 0.77,
+                                "reset_time": "2026-11-06T07:58:32Z",
+                            }
+                        ],
+                    },
+                    {
+                        "name": "Gemini 4 Argon",
+                        "description": "For paid Pro plans, Argon quota is separate.",
+                        "buckets": [
+                            {
+                                "id": "gemini-argon-wtu-weekly",
+                                "name": "Gemini 4 Argon Weekly Limit",
+                                "window": "weekly",
+                                "remaining_fraction": 1.0,
+                                "reset_time": "2026-11-06T07:54:09Z",
+                            }
+                        ],
+                    },
+                ]
+            },
+        }
+    }).encode("utf-8")
+
+    class MockProc:
+        returncode = 0
+        async def communicate(self):
+            return mock_cli_json, b""
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=MockProc()))
+
+    qs = await fetch_quota_summary()
+    assert not qs.error
+    assert len(qs.groups) == 3
+    card = render_limits_card(qs)
+    assert "Gemini 4 Argon" in card
+    assert "100%" in card
+    assert "73%" in card
+    assert "77%" in card

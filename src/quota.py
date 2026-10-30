@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,9 @@ LOG = logging.getLogger("antigravity_telegram_bridge")
 QUOTA_SUMMARY_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 MODELS_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
 TOKEN_FILE_PATH = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+
+_QUOTA_CACHE: tuple[float, QuotaSummary] | None = None
+_CACHE_TTL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -107,8 +111,74 @@ async def _refresh_token_via_cli(agy_path: str = "") -> tuple[str, str]:
     return _read_oauth_token()
 
 
+async def _fetch_from_cli(bin_path: str) -> QuotaSummary | None:
+    """Fetch complete quota summary using `agy -p '/quota' --output-format json`."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            bin_path,
+            "-p",
+            "/quota",
+            "--output-format",
+            "json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
+        if proc.returncode != 0:
+            return None
+        data = json.loads(stdout.decode())
+        cmd_data = data.get("command", {}).get("data", {})
+        raw_groups = cmd_data.get("groups")
+        if not raw_groups:
+            return None
+
+        groups: list[QuotaGroup] = []
+        for rg in raw_groups:
+            buckets: list[QuotaBucket] = []
+            for b in rg.get("buckets") or []:
+                buckets.append(
+                    QuotaBucket(
+                        bucket_id=str(b.get("id") or ""),
+                        display_name=str(b.get("name") or ""),
+                        window=str(b.get("window") or ""),
+                        reset_time=str(b.get("reset_time") or ""),
+                        remaining_fraction=float(b.get("remaining_fraction", 0.0)),
+                        description=str(b.get("description") or ""),
+                    )
+                )
+            groups.append(
+                QuotaGroup(
+                    display_name=str(rg.get("name") or ""),
+                    description=str(rg.get("description") or ""),
+                    buckets=buckets,
+                )
+            )
+
+        _, email = _read_oauth_token()
+        return QuotaSummary(groups=groups, user_email=email)
+    except Exception as exc:
+        LOG.debug("fetch_quota_summary via CLI failed: %s", exc)
+        return None
+
+
 async def fetch_quota_summary(agy_path: str = "") -> QuotaSummary:
-    """Fetch real-time quota limits directly from Google Cloud Code Assist backend."""
+    """Fetch real-time quota limits from Antigravity CLI or directly from backend."""
+    global _QUOTA_CACHE
+    now = time.time()
+    if _QUOTA_CACHE is not None:
+        cached_time, cached_summary = _QUOTA_CACHE
+        if (now - cached_time) < _CACHE_TTL_SECONDS and not cached_summary.error:
+            return cached_summary
+
+    bin_path = _resolve_agy_bin(agy_path)
+
+    # 1. Primary: fetch official structured quota from agy CLI
+    cli_summary = await _fetch_from_cli(bin_path)
+    if cli_summary and cli_summary.groups:
+        _QUOTA_CACHE = (now, cli_summary)
+        return cli_summary
+
+    # 2. Fallback: fetch directly via HTTP API if CLI not available or timed out
     access_token, email = _read_oauth_token()
     if not access_token:
         access_token, email = await _refresh_token_via_cli(agy_path)
@@ -200,7 +270,7 @@ async def fetch_quota_summary(agy_path: str = "") -> QuotaSummary:
             groups.append(
                 QuotaGroup(
                     display_name="Модели Gemini (Google 1st-Party)",
-                    description="В группе: Gemini 4 Argon, Gemini 3.8 Flash, Pro",
+                    description="В группе: Gemini Flash, Gemini Pro",
                     buckets=[
                         QuotaBucket(
                             bucket_id="gemini-rolling",
@@ -214,7 +284,9 @@ async def fetch_quota_summary(agy_path: str = "") -> QuotaSummary:
                 )
             )
 
-    return QuotaSummary(groups=groups, user_email=email)
+    summary = QuotaSummary(groups=groups, user_email=email)
+    _QUOTA_CACHE = (now, summary)
+    return summary
 
 
 def _format_progress_bar(fraction: float, length: int = 10) -> str:
@@ -269,9 +341,10 @@ def _format_time_left(reset_time_iso: str) -> str:
 def _translate_bucket_name(bucket: QuotaBucket) -> str:
     window = bucket.window.lower()
     b_id = bucket.bucket_id.lower()
-    if window == "weekly" or "weekly" in b_id:
+    disp = (bucket.display_name or "").lower()
+    if window == "weekly" or "weekly" in b_id or "weekly" in disp:
         return "Недельный лимит"
-    if window == "5h" or "5h" in b_id:
+    if window == "5h" or "5h" in b_id or "five hour" in disp:
         return "5-часовой лимит"
     if window == "rolling" or "gemini" in b_id:
         return "Скользящий лимит"
@@ -296,13 +369,21 @@ def render_limits_card(qs: QuotaSummary) -> str:
         if i > 0:
             lines.append("───────────────")
         group_title = g.display_name
-        if group_title.lower() == "claude and gpt models":
+        g_lower = group_title.lower()
+        if g_lower == "claude and gpt models":
             group_title = "Модели Claude и GPT (3rd-Party)"
+        elif g_lower == "gemini models":
+            group_title = "Модели Gemini Flash и Pro (Google 1st-Party)"
+        elif "argon" in g_lower:
+            group_title = "Модель Gemini 4 Argon (Google 1st-Party)"
+
         lines.append(f"🤖 <b>{html.escape(group_title)}</b>")
         if g.description:
             desc = g.description
             if desc.startswith("Models within this group:"):
                 desc = desc.replace("Models within this group:", "В группе:")
+            elif "Argon quota is separate" in desc:
+                desc = "Отдельная еженедельная квота для Gemini 4 Argon."
             lines.append(f"<i>{html.escape(desc)}</i>\n")
         else:
             lines.append("")
