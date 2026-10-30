@@ -199,7 +199,7 @@ async def test_command_files_and_get(tmp_path: Path) -> None:
 
 async def test_command_diff(tmp_path: Path, monkeypatch) -> None:
     cs = _state()
-    cs.chat_dir = str(tmp_path)
+    cs.chat_dir = "/tmp"
 
     # Non-git directory
     reply_no_git = await handle_text_command(_FakeMsg("/diff"), cs, _cfg())

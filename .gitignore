@@ -24,3 +24,4 @@ logs/
 *.log
 # roborev snapshots
 /.roborev/
+pytest-of-root/
