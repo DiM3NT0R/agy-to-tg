@@ -222,7 +222,21 @@ async def run_agy(
         await process.wait()
         msg = f"agy timed out after {timeout}s"
         return AgyResult(text=final_text or partial_text, exit_code=124, stderr=msg)
+    except (asyncio.CancelledError, BaseException):
+        if process.returncode is None:
+            await _terminate_process_group(signal.SIGKILL, grace_s=0.5)
+            try:
+                await process.wait()
+            except Exception:
+                pass
+        raise
     finally:
+        if process.returncode is None:
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
         gc.collect()
 
     stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace")
