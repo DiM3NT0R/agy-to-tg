@@ -90,23 +90,45 @@ def _effective_mode(cs: "ChatState", cfg: "Config") -> tuple[str, str]:
 
 
 def render_status(cs: "ChatState", cfg: "Config") -> str:
+    import platform
+    import shutil
+
     model, model_src = _effective_model(cs, cfg)
     mode, mode_src = _effective_mode(cs, cfg)
-    session = "активна (продолжение)" if cs.has_session else "чистая (новая сессия)"
+    session = f"активна ({cs.turn_count} ходов)" if cs.has_session else "чистая (новая сессия)"
     home = os.path.expanduser("~")
     workdir = cs.chat_dir.replace(home, "~", 1)
-    return (
-        "🟢 Статус моста Antigravity\n"
-        f"Модель:     {model}  [{model_src}]\n"
-        f"Режим:      {mode}  [{mode_src}]\n" \
-        f"Effort:     {cs.effort or 'default'}\n" \
-        f"Таймаут:    {cs.print_timeout or '15m'}\n"
-        "\n"
-        "Этот чат:\n"
-        f"  Сессия:   {session}\n"
-        f"  Ходов:    {cs.turn_count}\n"
-        f"  Папка:    {workdir}"
-    )
+
+    node = platform.node() or "unknown"
+    host_type = "VPS" if ("dm" in node.lower() or "vps" in node.lower()) else "Home Server"
+    disk_free = ""
+    try:
+        du = shutil.disk_usage(cs.chat_dir)
+        disk_free = f"{du.free / (1024**3):.1f}GB"
+    except Exception:
+        pass
+
+    voice = cs.voice or "filipp"
+    speed = cs.voice_speed or "1.15"
+    av = "ВКЛ" if cs.auto_voice else "ВЫКЛ"
+
+    sys_parts = [f"<code>{html.escape(node)}</code> ({host_type})"]
+    if disk_free:
+        sys_parts.append(f"диск: <b>{disk_free}</b> свободно")
+
+    lines = [
+        "🟢 <b>Статус моста Antigravity</b>",
+        f"🖥 Хост: {' · '.join(sys_parts)}",
+        f"🤖 Модель: <code>{html.escape(model)}</code> [{model_src}]",
+        f"🛡 Режим: <code>{html.escape(mode)}</code> [{mode_src}]",
+        f"⚙️ Effort: <code>{html.escape(cs.effort or 'default')}</code> · Таймаут: <code>{html.escape(cs.print_timeout or '15m')}</code>",
+        f"🎙 Голос: <code>{html.escape(voice)}</code> ({speed}x) · Авто: <b>{av}</b>",
+        "",
+        "<b>Текущий чат:</b>",
+        f"• Сессия: {session}",
+        f"• Папка: <code>{html.escape(workdir)}</code>",
+    ]
+    return "\n".join(lines)
 
 
 def _limits_keyboard() -> InlineKeyboard:

@@ -127,6 +127,75 @@ async def transcribe_voice_groq(
         return str(payload.get("text") or "").strip()
 
 
+VOICE_INTENTS: dict[str, str] = {
+    # limits
+    "лимиты": "/limits",
+    "лимит": "/limits",
+    "покажи лимиты": "/limits",
+    "какие лимиты": "/limits",
+    "квота": "/limits",
+    "квоты": "/limits",
+    "проверь лимиты": "/limits",
+    "проверь квоту": "/limits",
+    # status
+    "статус": "/status",
+    "покажи статус": "/status",
+    "статус бота": "/status",
+    "инфо": "/status",
+    "информация": "/status",
+    # reset
+    "сбрось сессию": "/reset",
+    "сброс сессии": "/reset",
+    "сброс": "/reset",
+    "очисти сессию": "/reset",
+    "новый диалог": "/reset",
+    "новая сессия": "/reset",
+    "чистая сессия": "/reset",
+    # compact
+    "сжатие": "/compact",
+    "сожми сессию": "/compact",
+    "сожми контекст": "/compact",
+    "компакт": "/compact",
+    # files
+    "файлы": "/files",
+    "покажи файлы": "/files",
+    "список файлов": "/files",
+    # diff
+    "дифф": "/diff",
+    "покажи дифф": "/diff",
+    "изменения": "/diff",
+    "изменения в гите": "/diff",
+    # settings
+    "настройки": "/settings",
+    "открой настройки": "/settings",
+    # voice
+    "голос": "/voice",
+    "настройки голоса": "/voice",
+    # pwd
+    "рабочая папка": "/pwd",
+    "где я": "/pwd",
+    "путь": "/pwd",
+    # stop
+    "стоп": "/stop",
+    "остановись": "/stop",
+    "хватит": "/stop",
+}
+
+
+def map_voice_intent(text: str) -> str | None:
+    """Map spoken phrases like 'покажи лимиты' directly to slash commands like '/limits'."""
+    if not text:
+        return None
+    raw = text.strip()
+    if raw.startswith("/"):
+        return raw
+    clean = re.sub(r"[.!?,]+$", "", raw).strip().lower()
+    if clean.startswith("слеш ") or clean.startswith("слэш "):
+        cmd_part = clean.split(maxsplit=1)[1].strip()
+        return f"/{cmd_part}"
+    return VOICE_INTENTS.get(clean)
+
+
 def _convert_mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes | None:
     """Convert MP3 bytes to OGG Opus using ffmpeg if installed on the system."""
     ffmpeg_bin = shutil.which("ffmpeg")

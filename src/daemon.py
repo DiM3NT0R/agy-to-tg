@@ -23,7 +23,13 @@ from src.state import ChatState, SessionKey, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
 from src.turn import ACTIVE_STOPS, execute_agy
 from src.updater import auto_update_loop
-from src.voice import cache_reply_text, get_cached_reply_text, synthesize_speech, transcribe_voice_groq
+from src.voice import (
+    cache_reply_text,
+    get_cached_reply_text,
+    map_voice_intent,
+    synthesize_speech,
+    transcribe_voice_groq,
+)
 from src.webhook import drain_webhook_updates, start_webhook_server
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
@@ -296,6 +302,9 @@ async def _process_text(
                 except Exception:
                     pass
             combined_text = f"{msg.text}\n{transcribed}".strip() if msg.text else transcribed
+            mapped_cmd = map_voice_intent(combined_text)
+            if mapped_cmd:
+                combined_text = mapped_cmd
             msg = replace(msg, text=combined_text)
 
     reply = await handle_text_command(msg, cs, cfg)

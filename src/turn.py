@@ -188,26 +188,44 @@ async def execute_agy(
             stype = su.get("step_type")
             state = su.get("state")
             if stype == "tool" and state == "ACTIVE":
-                tool = su.get("tool_name", "unknown")
+                tool = str(su.get("tool_name") or "unknown")
                 info = su.get("tool_info", {}).get("parameters", {})
                 extra = ""
-                if tool == "run_command" and "CommandLine" in info:
-                    cmd = info["CommandLine"].strip().split("\n")[0]
-                    extra = f": {cmd}"
-                elif "TargetFile" in info:
-                    file_name = info["TargetFile"].split("/")[-1]
-                    extra = f" ({file_name})"
-                elif "AbsolutePath" in info:
-                    file_name = info["AbsolutePath"].split("/")[-1]
-                    extra = f" ({file_name})"
-                elif "SearchPath" in info:
-                    file_name = info["SearchPath"].split("/")[-1]
-                    extra = f" ({file_name})"
-                
-                if len(extra) > 60:
-                    extra = extra[:57] + "..."
-                
-                await updater.update(f"🛠 Выполняю: {tool}{extra}")
+                summary = str(info.get("toolSummary") or "")
+
+                if tool == "run_command":
+                    cmd = str(info.get("CommandLine") or "").strip().split("\n")[0]
+                    extra = f": {summary or cmd}"
+                    tool_desc = "💻 Команда"
+                elif tool in ("read_file", "edit_file", "write_file") or "Path" in info:
+                    path = str(info.get("Path") or info.get("TargetFile") or info.get("AbsolutePath") or "")
+                    fname = path.split("/")[-1] if path else ""
+                    action = "📖 Чтение" if tool == "read_file" else ("✏️ Правка" if tool == "edit_file" else "📝 Создание")
+                    extra = f": {fname}" if fname else ""
+                    tool_desc = action
+                elif tool == "search_web":
+                    q = str(info.get("query") or "")
+                    extra = f": {q}"
+                    tool_desc = "🌐 Поиск"
+                elif tool == "invoke_subagent":
+                    role = str(info.get("Role") or info.get("TypeName") or "")
+                    extra = f": {role}"
+                    tool_desc = "🤖 Субагент"
+                elif tool == "manage_task":
+                    action = str(info.get("Action") or "")
+                    extra = f": {action}"
+                    tool_desc = "⚙️ Задача"
+                else:
+                    tool_desc = f"🛠 {tool}"
+                    if "Path" in info:
+                        extra = f": {str(info['Path']).split('/')[-1]}"
+                    elif "query" in info:
+                        extra = f": {info['query']}"
+
+                if len(extra) > 55:
+                    extra = extra[:52] + "..."
+
+                await updater.update(f"{tool_desc}{extra}")
             elif stype == "agent_response" and state == "ACTIVE":
                 await updater.update("💬 Формирую ответ...")
 

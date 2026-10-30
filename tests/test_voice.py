@@ -367,3 +367,21 @@ async def test_auto_voice_synthesizes_automatically_on_turn(tmp_path: Any, monke
     assert seen_tts_kwargs[0]["voice"] == "zahar"
     assert seen_tts_kwargs[0]["speed"] == "1.3"
 
+
+def test_map_voice_intent() -> None:
+    from src.voice import map_voice_intent
+
+    assert map_voice_intent("Покажи лимиты.") == "/limits"
+    assert map_voice_intent("лимит") == "/limits"
+    assert map_voice_intent("Статус") == "/status"
+    assert map_voice_intent("Сбрось сессию!") == "/reset"
+    assert map_voice_intent("файлы") == "/files"
+    assert map_voice_intent("покажи дифф") == "/diff"
+    assert map_voice_intent("настройки") == "/settings"
+    assert map_voice_intent("где я") == "/pwd"
+    assert map_voice_intent("слеш compact") == "/compact"
+    assert map_voice_intent("слэш status") == "/status"
+    # Normal prompt should not be matched
+    assert map_voice_intent("Напиши мне функцию на Python") is None
+
+
