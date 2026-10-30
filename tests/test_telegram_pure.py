@@ -162,3 +162,40 @@ def test_markdown_to_telegram_html_renders_tables_and_task_lists() -> None:
     assert "✅ Сделано" in html_out
     assert "⬜ В планах" in html_out
     assert "▫️ <b>Модель</b> — <i>Статус:</i> OK" in html_out
+
+
+def test_markdown_to_telegram_html_preserves_valid_telegram_html_tags() -> None:
+    raw = (
+        "📊 <b>Лимиты моделей Antigravity</b>\n"
+        "👤 Аккаунт: <code>siplerviar775@gmail.com</code>\n"
+        "🤖 <b>Модели Claude и GPT</b>\n"
+        "<i>В группе: Claude Opus</i>\n"
+        "Остаток: 🟢 <code>[██████████]</code> <b>100%</b>\n"
+        "Ссылка: <a href=\"https://t.me\">Telegram</a>\n"
+        "Цитата: <blockquote>Важный текст</blockquote>\n"
+        "Формула с углами: if a < b and c > d:\n"
+    )
+    html_out = markdown_to_telegram_html(raw)
+    # Valid tags must NOT be double-escaped to &lt;b&gt; or &lt;code&gt;
+    assert "&lt;b&gt;" not in html_out
+    assert "&lt;code&gt;" not in html_out
+    assert "&lt;i&gt;" not in html_out
+    assert "<b>Лимиты моделей Antigravity</b>" in html_out
+    assert "<code>siplerviar775@gmail.com</code>" in html_out
+    assert "<code>[██████████]</code>" in html_out
+    assert '<a href="https://t.me">Telegram</a>' in html_out
+    assert "<blockquote>Важный текст</blockquote>" in html_out
+    # Non-tag comparisons MUST still be escaped properly
+    assert "if a &lt; b and c &gt; d:" in html_out
+
+
+def test_markdown_to_telegram_html_preserves_pre_code_blocks() -> None:
+    raw = (
+        "📝 <b>Изменения git diff:</b>\n"
+        '<pre><code class="language-diff">--- a/file.py\n+++ b/file.py\n- old line\n+ new line</code></pre>'
+    )
+    html_out = markdown_to_telegram_html(raw)
+    assert "<b>Изменения git diff:</b>" in html_out
+    assert '<pre><code class="language-diff">--- a/file.py\n+++ b/file.py\n- old line\n+ new line</code></pre>' in html_out
+    assert "&lt;pre&gt;" not in html_out
+

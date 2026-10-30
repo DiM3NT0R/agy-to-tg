@@ -208,12 +208,52 @@ def _format_inline_markdown(text: str) -> str:
     return text
 
 
+_ALLOWED_TELEGRAM_TAGS_RE = re.compile(
+    r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)(?:\s+[^>]*?)?>|"
+    r"<a\s+href=[\x27\x22][^\x27\x22]*?[\x27\x22]\s*>|"
+    r"</a>",
+    re.IGNORECASE,
+)
+
+
+def _escape_and_format_inline(raw_text: str) -> str:
+    """Escape text for Telegram HTML while preserving valid Telegram tags and converting Markdown."""
+    if not raw_text:
+        return ""
+    stashed_tags: list[str] = []
+
+    def _stash_tag(m: re.Match[str]) -> str:
+        idx = len(stashed_tags)
+        stashed_tags.append(m.group(0))
+        return f"\x00TAG{idx}\x00"
+
+    text_with_tag_placeholders = _ALLOWED_TELEGRAM_TAGS_RE.sub(_stash_tag, raw_text)
+    escaped_text = html.escape(text_with_tag_placeholders)
+    formatted = _format_inline_markdown(escaped_text)
+    for i, tag in enumerate(stashed_tags):
+        formatted = formatted.replace(f"\x00TAG{i}\x00", tag)
+    return formatted
+
+
 def markdown_to_telegram_html(text: str) -> str:
     """Convert GitHub-Flavored Markdown to Telegram-compatible HTML."""
     if not text:
         return ""
 
     code_blocks: list[str] = []
+
+    # 1. Extract existing <pre>...</pre> blocks
+    def _replace_pre_block(m: re.Match[str]) -> str:
+        idx = len(code_blocks)
+        code_blocks.append(m.group(0))
+        return f"\x00CB{idx}\x00"
+
+    processed = re.sub(
+        r"<pre(?:\s+[^>]*?)?>.*?</pre>",
+        _replace_pre_block,
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
     def _replace_fenced_block(m: re.Match[str]) -> str:
         lang = (m.group(1) or "").strip()
@@ -229,11 +269,11 @@ def markdown_to_telegram_html(text: str) -> str:
         code_blocks.append(block_html)
         return f"\x00CB{idx}\x00"
 
-    # Extract fenced code blocks ```lang ... ```
+    # 2. Extract fenced code blocks ```lang ... ```
     processed = re.sub(
         r"```([a-zA-Z0-9_+-]*)[ \t]*\n(.*?)```",
         _replace_fenced_block,
-        text,
+        processed,
         flags=re.DOTALL,
     )
 
@@ -264,13 +304,13 @@ def markdown_to_telegram_html(text: str) -> str:
             headers = parsed_rows[0]
             out_lines.append("")
             for r in parsed_rows[1:]:
-                first_col = _format_inline_markdown(html.escape(r[0])) if r else ""
+                first_col = _escape_and_format_inline(r[0]) if r else ""
                 rest_parts: list[str] = []
                 for idx_c in range(1, len(r)):
-                    val = _format_inline_markdown(html.escape(r[idx_c]))
+                    val = _escape_and_format_inline(r[idx_c])
                     if not val:
                         continue
-                    hdr = _format_inline_markdown(html.escape(headers[idx_c])) if idx_c < len(headers) else ""
+                    hdr = _escape_and_format_inline(headers[idx_c]) if idx_c < len(headers) else ""
                     if hdr:
                         rest_parts.append(f"<i>{hdr}:</i> {val}")
                     else:
@@ -281,7 +321,7 @@ def markdown_to_telegram_html(text: str) -> str:
                     out_lines.append(f"▫️ <b>{first_col}</b>")
         else:
             for tline in table_buffer:
-                out_lines.append(_format_inline_markdown(html.escape(tline)))
+                out_lines.append(_escape_and_format_inline(tline))
         table_buffer.clear()
 
     for line in lines:
@@ -303,7 +343,7 @@ def markdown_to_telegram_html(text: str) -> str:
         # Blockquotes: > text
         q_match = re.match(r"^[ \t]*>[ \t]?(.*)$", line)
         if q_match:
-            q_content = html.escape(q_match.group(1))
+            q_content = q_match.group(1)
             # Strip GitHub alert markers like [!NOTE], [!WARNING], etc. into bold labels
             q_content = re.sub(
                 r"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*",
@@ -311,7 +351,7 @@ def markdown_to_telegram_html(text: str) -> str:
                 q_content,
                 flags=re.IGNORECASE,
             )
-            quote_buffer.append(_format_inline_markdown(q_content))
+            quote_buffer.append(_escape_and_format_inline(q_content))
             continue
         else:
             _flush_quote()
@@ -319,7 +359,7 @@ def markdown_to_telegram_html(text: str) -> str:
         # Headings: # Heading -> <b>Heading</b>
         h_match = re.match(r"^[ \t]*(#{1,6})[ \t]+(.+?)[ \t]*$", line)
         if h_match:
-            h_content = _format_inline_markdown(html.escape(h_match.group(2)))
+            h_content = _escape_and_format_inline(h_match.group(2))
             out_lines.append(f"<b>{h_content}</b>")
             continue
 
@@ -334,7 +374,7 @@ def markdown_to_telegram_html(text: str) -> str:
             indent = task_match.group(1)
             checked = task_match.group(2).lower() == "x"
             icon = "✅" if checked else "⬜"
-            item_content = _format_inline_markdown(html.escape(task_match.group(3)))
+            item_content = _escape_and_format_inline(task_match.group(3))
             out_lines.append(f"{indent}{icon} {item_content}")
             continue
 
@@ -342,12 +382,11 @@ def markdown_to_telegram_html(text: str) -> str:
         b_match = re.match(r"^([ \t]*)[-*][ \t]+(.+)$", line)
         if b_match:
             indent = b_match.group(1)
-            item_content = _format_inline_markdown(html.escape(b_match.group(2)))
+            item_content = _escape_and_format_inline(b_match.group(2))
             out_lines.append(f"{indent}• {item_content}")
             continue
 
-        escaped_line = html.escape(line)
-        out_lines.append(_format_inline_markdown(escaped_line))
+        out_lines.append(_escape_and_format_inline(line))
 
     _flush_quote()
     _flush_table()

@@ -208,10 +208,13 @@ def _format_time_left(reset_time_iso: str) -> str:
         parts = []
         if days > 0:
             parts.append(f"{days}д")
-        if hours > 0:
-            parts.append(f"{hours}ч")
-        if minutes > 0 or not parts:
-            parts.append(f"{minutes}мин")
+            if hours > 0:
+                parts.append(f"{hours}ч")
+        else:
+            if hours > 0:
+                parts.append(f"{hours}ч")
+            if minutes > 0 or not parts:
+                parts.append(f"{minutes}мин")
         return f"{' '.join(parts)} ({utc_str})"
     except Exception:
         return reset_time_iso
@@ -258,8 +261,8 @@ def render_limits_card(qs: QuotaSummary) -> str:
             bar = _format_progress_bar(b.remaining_fraction)
             time_left = _format_time_left(b.reset_time)
             lines.append(f"▫️ <b>{html.escape(name)}</b>:")
-            lines.append(f"   Остаток: {bar}")
-            lines.append(f"   ⏳ Сброс через: <b>{html.escape(time_left)}</b>")
+            lines.append(f"Остаток: {bar}")
+            lines.append(f"⏳ Сброс через: <b>{html.escape(time_left)}</b>")
             lines.append("")
 
     lines.append("───────────────")
