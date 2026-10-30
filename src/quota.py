@@ -247,7 +247,7 @@ def render_limits_card(qs: QuotaSummary) -> str:
     for g in qs.groups:
         group_title = g.display_name
         if group_title.lower() == "claude and gpt models":
-            group_title = "Модели Claude и GPT"
+            group_title = "Модели Claude и GPT (3rd-Party)"
         lines.append(f"🤖 <b>{html.escape(group_title)}</b>")
         if g.description:
             desc = g.description
@@ -266,6 +266,9 @@ def render_limits_card(qs: QuotaSummary) -> str:
             lines.append("")
 
     lines.append("───────────────")
-    lines.append("💡 <i>Модели Gemini расходуют отдельную квоту и доступны без ограничений.</i>")
+    lines.append("🤖 <b>Модели Gemini (Google 1st-Party)</b>")
+    lines.append("<i>В группе: Gemini 4 Argon, Gemini 3.8 Flash</i>\n")
+    lines.append("▫️ <b>Лимит квоты:</b> 🟢 <b>Без ограничений (Unlimited)</b>")
+    lines.append("💡 <i>Собственные модели Google работают на TPU-инфраструктуре Google и не имеют недельных или 5-часовых лимитов.</i>")
     return "\n".join(lines)
 
