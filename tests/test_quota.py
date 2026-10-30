@@ -135,3 +135,61 @@ async def test_fetch_quota_summary_success(monkeypatch) -> None:
         assert len(qs.groups) == 1
         assert len(qs.groups[0].buckets) == 1
         assert qs.groups[0].buckets[0].remaining_fraction == 0.5
+
+
+@pytest.mark.asyncio
+async def test_fetch_quota_summary_with_gemini(monkeypatch) -> None:
+    monkeypatch.setattr("src.quota._read_oauth_token", lambda: ("valid_token", "test@test.com"))
+
+    async def mock_post(url, *args, **kwargs):
+        if "retrieveUserQuotaSummary" in str(url):
+            return httpx.Response(
+                200,
+                json={
+                    "groups": [
+                        {
+                            "displayName": "Claude and GPT models",
+                            "buckets": [
+                                {
+                                    "bucketId": "3p-5h",
+                                    "displayName": "Five Hour Limit Remaining",
+                                    "window": "5h",
+                                    "resetTime": "2026-10-30T15:19:27Z",
+                                    "remainingFraction": 0.55,
+                                }
+                            ],
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", str(url)),
+            )
+        else:
+            return httpx.Response(
+                200,
+                json={
+                    "models": {
+                        "gemini-2.5-pro": {
+                            "displayName": "Gemini 2.5 Pro",
+                            "quotaInfo": {
+                                "remainingFraction": 0.82,
+                                "resetTime": "2026-10-30T15:09:23Z",
+                            },
+                        }
+                    }
+                },
+                request=httpx.Request("POST", str(url)),
+            )
+
+    with patch("httpx.AsyncClient.post", side_effect=mock_post):
+        qs = await fetch_quota_summary()
+        assert not qs.error
+        assert len(qs.groups) == 2
+        assert qs.groups[0].display_name == "Claude and GPT models"
+        assert qs.groups[1].display_name == "Модели Gemini (Google 1st-Party)"
+        assert qs.groups[1].buckets[0].remaining_fraction == 0.82
+        assert qs.groups[1].buckets[0].bucket_id == "gemini-rolling"
+
+        card = render_limits_card(qs)
+        assert "Модели Gemini (Google 1st-Party)" in card
+        assert "82%" in card
+        assert "55%" in card
