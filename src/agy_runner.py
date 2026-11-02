@@ -21,6 +21,10 @@ from dataclasses import dataclass
 # runaway agy output. 1MB is generous (typical replies are 1–5KB).
 _STDOUT_CAP_BYTES = 524_288  # 512 KiB
 
+DEFAULT_OVERALL_TIMEOUT_S = 1800.0  # 30 minutes
+DEFAULT_INACTIVITY_TIMEOUT_S = 300.0  # 5 minutes without status update
+DEFAULT_PRINT_TIMEOUT = "30m"
+
 # Regex patterns to sanitize internal system messages / wrapper XML tags injected by agy
 _SYSTEM_PATTERNS = [
     re.compile(
@@ -108,7 +112,8 @@ async def run_agy(
     mode: str,
     agy_path: str,
     timeout: float | None = None,
-    print_timeout: str = "15m",
+    inactivity_timeout: float | None = DEFAULT_INACTIVITY_TIMEOUT_S,
+    print_timeout: str = DEFAULT_PRINT_TIMEOUT,
     effort: str = "",
     conversation_id: str = "",
     on_event: "Callable[[dict], Awaitable[None]] | None" = None,
@@ -172,12 +177,19 @@ async def run_agy(
         except OSError:
             pass
 
+    last_activity_time = asyncio.get_event_loop().time()
+
+    def record_activity():
+        nonlocal last_activity_time
+        last_activity_time = asyncio.get_event_loop().time()
+
     async def read_stdout():
         nonlocal final_text, partial_text, final_error
         while True:
             line = await process.stdout.readline()
             if not line:
                 break
+            record_activity()
             if on_event is not None:
                 try:
                     data = json.loads(line.decode("utf-8", errors="replace"))
@@ -202,52 +214,79 @@ async def run_agy(
             line = await process.stderr.readline()
             if not line:
                 break
+            record_activity()
             stderr_chunks.append(line)
 
+    activity_event = asyncio.Event()
+
+    async def inactivity_watchdog():
+        if inactivity_timeout is None or inactivity_timeout <= 0:
+            return
+        while True:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - last_activity_time
+            remaining = inactivity_timeout - elapsed
+            if remaining <= 0:
+                activity_event.set()
+                break
+            await asyncio.sleep(min(remaining, 0.5))
+
+    inactivity_task = asyncio.create_task(activity_event.wait())
+    inactivity_watchdog_task = asyncio.create_task(inactivity_watchdog())
+    stop_task = asyncio.create_task(stop_event.wait()) if stop_event else None
+
+    async def run_all():
+        await asyncio.gather(read_stdout(), read_stderr(), process.wait())
+
+    main_task = asyncio.create_task(run_all())
+
+    wait_tasks = [main_task, inactivity_task]
+    if stop_task:
+        wait_tasks.append(stop_task)
+
     try:
-        if stop_event:
-            stop_task = asyncio.create_task(stop_event.wait())
-            async def run_all():
-                await asyncio.gather(read_stdout(), read_stderr(), process.wait())
-            main_task = asyncio.create_task(run_all())
-            done, pending = await asyncio.wait(
-                [main_task, stop_task],
-                return_when=asyncio.FIRST_COMPLETED,
-                timeout=timeout
-            )
-            if stop_task in done:
-                await _terminate_process_group(signal.SIGTERM, grace_s=1.5)
-                main_task.cancel()
-                await process.wait()
-                if on_event is None:
-                    raw_text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
-                else:
-                    raw_text = (final_text or partial_text).strip()
-                text = clean_system_messages(raw_text)
-                if text:
-                    text += "\n\n🛑 [Остановлено пользователем]"
-                stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n[stopped by user]"
-                return AgyResult(text=text, exit_code=130, stderr=stderr_out)
-            elif not done: # Timeout
-                await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
-                main_task.cancel()
-                stop_task.cancel()
-                await process.wait()
-                msg = f"agy timed out after {timeout}s"
-                stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n" + msg
-                return AgyResult(text=clean_system_messages(final_text or partial_text), exit_code=124, stderr=stderr_out)
+        done, pending = await asyncio.wait(
+            wait_tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=timeout,
+        )
+
+        if stop_task and stop_task in done:
+            await _terminate_process_group(signal.SIGTERM, grace_s=1.5)
+            main_task.cancel()
+            await process.wait()
+            if on_event is None:
+                raw_text = b"".join(stdout_chunks).decode("utf-8", errors="replace").strip()
             else:
-                stop_task.cancel()
+                raw_text = (final_text or partial_text).strip()
+            text = clean_system_messages(raw_text)
+            if text:
+                text += "\n\n🛑 [Остановлено пользователем]"
+            stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n[stopped by user]"
+            return AgyResult(text=text, exit_code=130, stderr=stderr_out)
+
+        elif inactivity_task in done:
+            await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
+            main_task.cancel()
+            await process.wait()
+            msg = f"agy timed out: no status update for {int(inactivity_timeout)}s"
+            raw_err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            stderr_out = f"{raw_err}\n{msg}" if raw_err else msg
+            return AgyResult(text=clean_system_messages(final_text or partial_text), exit_code=124, stderr=stderr_out)
+
+        elif not done:  # Total timeout expired
+            await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
+            main_task.cancel()
+            await process.wait()
+            msg = f"agy timed out after {timeout}s"
+            raw_err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            stderr_out = f"{raw_err}\n{msg}" if raw_err else msg
+            return AgyResult(text=clean_system_messages(final_text or partial_text), exit_code=124, stderr=stderr_out)
+
         else:
-            await asyncio.wait_for(
-                asyncio.gather(read_stdout(), read_stderr(), process.wait()),
-                timeout=timeout
-            )
-    except asyncio.TimeoutError:
-        await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
-        await process.wait()
-        msg = f"agy timed out after {timeout}s"
-        return AgyResult(text=clean_system_messages(final_text or partial_text), exit_code=124, stderr=msg)
+            if main_task.exception() is not None:
+                raise main_task.exception()
+
     except (asyncio.CancelledError, BaseException):
         if process.returncode is None:
             await _terminate_process_group(signal.SIGKILL, grace_s=0.5)
@@ -257,6 +296,10 @@ async def run_agy(
                 pass
         raise
     finally:
+        inactivity_watchdog_task.cancel()
+        inactivity_task.cancel()
+        if stop_task:
+            stop_task.cancel()
         if process.returncode is None:
             try:
                 pgid = os.getpgid(process.pid)

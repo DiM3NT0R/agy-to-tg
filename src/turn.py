@@ -18,7 +18,8 @@ if TYPE_CHECKING:
     from src.telegram import InboundMessage
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
-AGY_TIMEOUT_S = 900.0
+AGY_TIMEOUT_S = 1800.0  # 30 minutes max turn duration
+AGY_INACTIVITY_TIMEOUT_S = 300.0  # 5 minutes without status update
 
 
 SessionKey = tuple[int, int]
@@ -486,8 +487,9 @@ async def _run_agy_with_retry(
             mode=cs.mode or cfg.agy.mode,
             agy_path=agy_path,
             timeout=AGY_TIMEOUT_S,
+            inactivity_timeout=AGY_INACTIVITY_TIMEOUT_S,
             effort=cs.effort,
-            print_timeout=cs.print_timeout or "15m",
+            print_timeout=cs.print_timeout or "30m",
             conversation_id=cs.conversation_id if cs.has_session else "",
             on_event=tracking_on_event if on_event else None,
             stop_event=stop_event,

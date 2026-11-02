@@ -121,7 +121,7 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
         f"🖥 Хост: {' · '.join(sys_parts)}",
         f"🤖 Модель: <code>{html.escape(model)}</code> [{model_src}]",
         f"🛡 Режим: <code>{html.escape(mode)}</code> [{mode_src}]",
-        f"⚙️ Effort: <code>{html.escape(cs.effort or 'default')}</code> · Таймаут: <code>{html.escape(cs.print_timeout or '15m')}</code>",
+        f"⚙️ Effort: <code>{html.escape(cs.effort or 'default')}</code> · Таймаут: <code>{html.escape(cs.print_timeout or '30m')}</code>",
         f"🎙 Голос: <code>{html.escape(voice)}</code> ({speed}x) · Авто: <b>{av}</b>",
         "",
         "<b>Текущий чат:</b>",

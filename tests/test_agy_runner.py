@@ -145,6 +145,53 @@ async def test_run_agy_returns_timeout_result(tmp_path: Path) -> None:
     assert result.text == ""
 
 
+async def test_run_agy_enforces_inactivity_timeout(tmp_path: Path) -> None:
+    script = tmp_path / "agy-hang-inactivity"
+    script.write_text("#!/bin/sh\ncat > /dev/null\nsleep 5\n")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = await run_agy(
+        prompt="x",
+        chat_dir=str(tmp_path),
+        has_session=False,
+        model="",
+        mode="code",
+        agy_path=str(script),
+        timeout=10.0,
+        inactivity_timeout=0.3,
+    )
+    assert result.exit_code == 124
+    assert "no status update" in result.stderr
+    assert result.text == ""
+
+
+async def test_run_agy_resets_inactivity_timeout_on_activity(tmp_path: Path) -> None:
+    script = tmp_path / "agy-active-resets"
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null\n"
+        "echo step1\n"
+        "sleep 0.15\n"
+        "echo step2\n"
+        "sleep 0.15\n"
+        "echo finished\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = await run_agy(
+        prompt="x",
+        chat_dir=str(tmp_path),
+        has_session=False,
+        model="",
+        mode="code",
+        agy_path=str(script),
+        timeout=10.0,
+        inactivity_timeout=0.25,
+    )
+    assert result.exit_code == 0
+    assert "finished" in result.text
+
+
 async def test_run_agy_no_timeout_by_default(fake_agy: Path, tmp_path: Path) -> None:
     result = await run_agy(
         prompt="x",

@@ -38,7 +38,8 @@ DEFAULT_STATE_PATH = Path.home() / ".antigravity" / "bridge" / "state.json"
 DEFAULT_CHATS_ROOT = Path.home() / ".antigravity" / "bridge" / "chats"
 DEFAULT_AGY_BIN = "agy"
 LONG_POLL_TIMEOUT = 30
-AGY_TIMEOUT_S = 900.0
+AGY_TIMEOUT_S = 1800.0  # 30 minutes
+AGY_INACTIVITY_TIMEOUT_S = 300.0  # 5 minutes without status update
 _QUEUE = TurnQueue()
 
 
@@ -151,10 +152,10 @@ def _ensure_chat_state(
 def _format_timeout_reply() -> str:
     minutes = AGY_TIMEOUT_S / 60
     return (
-        f"⏱️ agy turn cut off at {minutes:.0f} min.\n\n"
-        "• Send a shorter follow-up\n"
-        "• Split into smaller steps\n"
-        "• /reset to start fresh"
+        f"⏱️ Превышен лимит времени работы ({minutes:.0f} мин или более 5 мин без обновления статуса разработки).\n\n"
+        "• Отправьте более короткий уточняющий запрос\n"
+        "• Разбейте задачу на отдельные этапы\n"
+        "• /reset для начала нового диалога"
     )
 
 
@@ -173,7 +174,7 @@ async def _do_turn(
     text = clean_system_messages(raw_text)
     if code == 124:
         record_error()
-        reply = "⚠️ Время ожидания ответа истекло."
+        reply = text or _format_timeout_reply()
     elif code == 130:
         reply = text or "🛑 Выполнение остановлено."
     elif code != 0:
