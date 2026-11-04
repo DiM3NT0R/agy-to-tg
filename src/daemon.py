@@ -39,7 +39,7 @@ DEFAULT_CHATS_ROOT = Path.home() / ".antigravity" / "bridge" / "chats"
 DEFAULT_AGY_BIN = "agy"
 LONG_POLL_TIMEOUT = 30
 AGY_TIMEOUT_S = 1800.0  # 30 minutes
-AGY_INACTIVITY_TIMEOUT_S = 300.0  # 5 minutes without status update
+AGY_INACTIVITY_TIMEOUT_S = 600.0  # 10 minutes without model response (outside active tools)
 _QUEUE = TurnQueue()
 
 
@@ -152,7 +152,7 @@ def _ensure_chat_state(
 def _format_timeout_reply() -> str:
     minutes = AGY_TIMEOUT_S / 60
     return (
-        f"⏱️ Превышен лимит времени работы ({minutes:.0f} мин или более 5 мин без обновления статуса разработки).\n\n"
+        f"⏱️ Превышен лимит времени работы ({minutes:.0f} мин).\n\n"
         "• Отправьте более короткий уточняющий запрос\n"
         "• Разбейте задачу на отдельные этапы\n"
         "• /reset для начала нового диалога"

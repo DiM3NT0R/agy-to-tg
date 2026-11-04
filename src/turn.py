@@ -19,7 +19,24 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger("antigravity_telegram_bridge")
 AGY_TIMEOUT_S = 1800.0  # 30 minutes max turn duration
-AGY_INACTIVITY_TIMEOUT_S = 300.0  # 5 minutes without status update
+AGY_INACTIVITY_TIMEOUT_S = 600.0  # 10 minutes without model response (outside active tools)
+
+
+def parse_timeout_seconds(val: str, default: float = 1800.0) -> float:
+    """Parse duration string like '30m', '1h', '600s' into float seconds."""
+    if not val:
+        return default
+    val = val.strip().lower()
+    try:
+        if val.endswith("h"):
+            return float(val[:-1]) * 3600.0
+        elif val.endswith("m"):
+            return float(val[:-1]) * 60.0
+        elif val.endswith("s"):
+            return float(val[:-1])
+        return float(val)
+    except (ValueError, TypeError):
+        return default
 
 
 SessionKey = tuple[int, int]
@@ -479,6 +496,7 @@ async def _run_agy_with_retry(
             if on_event:
                 await on_event(data)
 
+        turn_timeout = parse_timeout_seconds(cs.print_timeout, default=AGY_TIMEOUT_S)
         result = await run_agy(
             prompt=prompt,
             chat_dir=cs.chat_dir,
@@ -486,7 +504,7 @@ async def _run_agy_with_retry(
             model=cs.model or cfg.agy.model,
             mode=cs.mode or cfg.agy.mode,
             agy_path=agy_path,
-            timeout=AGY_TIMEOUT_S,
+            timeout=turn_timeout,
             inactivity_timeout=AGY_INACTIVITY_TIMEOUT_S,
             effort=cs.effort,
             print_timeout=cs.print_timeout or "30m",

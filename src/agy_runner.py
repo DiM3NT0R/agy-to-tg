@@ -22,7 +22,7 @@ from dataclasses import dataclass
 _STDOUT_CAP_BYTES = 524_288  # 512 KiB
 
 DEFAULT_OVERALL_TIMEOUT_S = 1800.0  # 30 minutes
-DEFAULT_INACTIVITY_TIMEOUT_S = 300.0  # 5 minutes without status update
+DEFAULT_INACTIVITY_TIMEOUT_S = 600.0  # 10 minutes without model/system response
 DEFAULT_PRINT_TIMEOUT = "30m"
 
 # Regex patterns to sanitize internal system messages / wrapper XML tags injected by agy
@@ -178,13 +178,14 @@ async def run_agy(
             pass
 
     last_activity_time = asyncio.get_event_loop().time()
+    tool_active = False
 
     def record_activity():
         nonlocal last_activity_time
         last_activity_time = asyncio.get_event_loop().time()
 
     async def read_stdout():
-        nonlocal final_text, partial_text, final_error
+        nonlocal final_text, partial_text, final_error, tool_active
         while True:
             line = await process.stdout.readline()
             if not line:
@@ -194,13 +195,24 @@ async def run_agy(
                 try:
                     data = json.loads(line.decode("utf-8", errors="replace"))
                     await on_event(data)
-                    if data.get("event") == "step_update":
+                    event_type = data.get("event")
+                    if event_type == "step_update":
                         su = data.get("step_update", {})
-                        if su.get("step_type") == "agent_response":
-                            resp_text = su.get("text") or su.get("content") or ""
-                            if isinstance(resp_text, str) and resp_text.strip():
-                                partial_text = resp_text
-                    elif data.get("event") == "result":
+                        stype = su.get("step_type")
+                        state = su.get("state")
+                        if stype == "tool":
+                            if state == "ACTIVE":
+                                tool_active = True
+                            else:
+                                tool_active = False
+                        elif stype in ("agent_response", "user_input"):
+                            tool_active = False
+                            if stype == "agent_response":
+                                resp_text = su.get("text") or su.get("content") or ""
+                                if isinstance(resp_text, str) and resp_text.strip():
+                                    partial_text = resp_text
+                    elif event_type in ("result", "done"):
+                        tool_active = False
                         result_obj = data.get("result", {})
                         final_text = result_obj.get("response", "")
                         final_error = result_obj.get("error", "")
@@ -223,6 +235,12 @@ async def run_agy(
         if inactivity_timeout is None or inactivity_timeout <= 0:
             return
         while True:
+            await asyncio.sleep(0.5)
+            if tool_active:
+                # An action/tool (run_command, subagent, script, build, etc.)
+                # is actively executing. Do not count execution duration
+                # against the inactivity watchdog; let it run up to the overall turn limit.
+                continue
             now = asyncio.get_event_loop().time()
             elapsed = now - last_activity_time
             remaining = inactivity_timeout - elapsed

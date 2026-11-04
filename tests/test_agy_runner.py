@@ -192,6 +192,62 @@ async def test_run_agy_resets_inactivity_timeout_on_activity(tmp_path: Path) -> 
     assert "finished" in result.text
 
 
+async def test_run_agy_allows_long_tool_execution(tmp_path: Path) -> None:
+    script = tmp_path / "agy-long-tool"
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null\n"
+        "echo '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"tool\",\"state\":\"ACTIVE\",\"tool_name\":\"run_command\"}}'\n"
+        "sleep 0.4\n"
+        "echo '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"tool\",\"state\":\"DONE\",\"tool_name\":\"run_command\"}}'\n"
+        "echo '{\"event\":\"result\",\"result\":{\"response\":\"long action completed\"}}'\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    events = []
+    async def capture(d: dict):
+        events.append(d)
+
+    result = await run_agy(
+        prompt="x",
+        chat_dir=str(tmp_path),
+        has_session=False,
+        model="",
+        mode="code",
+        agy_path=str(script),
+        timeout=5.0,
+        inactivity_timeout=0.2,  # 0.2s inactivity, but tool sleeps 0.4s
+        on_event=capture,
+    )
+    assert result.exit_code == 0
+    assert result.text == "long action completed"
+
+
+async def test_run_agy_enforces_inactivity_when_tool_not_active(tmp_path: Path) -> None:
+    script = tmp_path / "agy-hang-agent-resp"
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null\n"
+        "echo '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"agent_response\",\"state\":\"ACTIVE\"}}'\n"
+        "sleep 5\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    result = await run_agy(
+        prompt="x",
+        chat_dir=str(tmp_path),
+        has_session=False,
+        model="",
+        mode="code",
+        agy_path=str(script),
+        timeout=5.0,
+        inactivity_timeout=0.25,
+        on_event=lambda _: None,
+    )
+    assert result.exit_code == 124
+    assert "no status update" in result.stderr
+
+
 async def test_run_agy_no_timeout_by_default(fake_agy: Path, tmp_path: Path) -> None:
     result = await run_agy(
         prompt="x",
