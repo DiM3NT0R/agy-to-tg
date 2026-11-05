@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.media import clean_inbox, list_inbox, list_workspace_files, safe_resolve_workspace_file
-from src.models import FALLBACK_MODELS, get_available_models
+from src.models import FALLBACK_MODELS, get_available_models, get_available_codex_models, get_engine_for_model
 from src.quota import fetch_quota_summary, render_limits_card
 from src.state import is_valid_model
 from src.telegram import InlineKeyboard
@@ -116,9 +116,11 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
     if disk_free:
         sys_parts.append(f"диск: <b>{disk_free}</b> свободно")
 
+    engine = getattr(cs, "engine", "") or get_engine_for_model(model)
     lines = [
-        "🟢 <b>Статус моста Antigravity</b>",
+        "🟢 <b>Статус моста AI Agent Bridge</b>",
         f"🖥 Хост: {' · '.join(sys_parts)}",
+        f"⚡️ Движок: <b>{engine.upper()}</b>",
         f"🤖 Модель: <code>{html.escape(model)}</code> [{model_src}]",
         f"🛡 Режим: <code>{html.escape(mode)}</code> [{mode_src}]",
         f"⚙️ Effort: <code>{html.escape(cs.effort or 'default')}</code> · Таймаут: <code>{html.escape(cs.print_timeout or '30m')}</code>",
@@ -149,6 +151,10 @@ def _settings_keyboard() -> InlineKeyboard:
         [
             {"text": "⚙️ Изменить Effort", "callback_data": "nav:effort"},
             {"text": "📁 Диалоги", "callback_data": "nav:projects"},
+        ],
+        [
+            {"text": "🔐 Авторизация", "callback_data": "nav:auth"},
+            {"text": "🗜️ Сжать контекст", "callback_data": "do_compact"},
         ],
         [
             {"text": "🎙 Голос и озвучка", "callback_data": "nav:voice"},
@@ -216,12 +222,24 @@ def _render_voice_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
 
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
-    models = get_available_models()
+    agy_models = get_available_models()
+    codex_models = get_available_codex_models()
     rows: InlineKeyboard = []
-    for model_id, display_name in models:
+
+    # Section 1: Google Antigravity
+    rows.append([{"text": "── 🌐 Antigravity / Gemini ──", "callback_data": "noop"}])
+    for model_id, display_name in agy_models:
         marker = "● " if model_id == current_per_chat else "○ "
         label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
         rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
+
+    # Section 2: OpenAI Codex
+    rows.append([{"text": "── ⚡️ OpenAI Codex ──", "callback_data": "noop"}])
+    for model_id, display_name in codex_models:
+        marker = "● " if model_id == current_per_chat else "○ "
+        label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
+        rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
+
     default_marker = "● " if not current_per_chat else "○ "
     rows.append([
         {"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"m:{_DEFAULT_TOKEN}"}
@@ -355,8 +373,9 @@ def _render_projects_picker(cs: "ChatState", offset: int = 0) -> BridgeReply:
 
 def _render_model_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
     cur, src = _effective_model(cs, cfg)
+    engine = getattr(cs, "engine", "") or get_engine_for_model(cur)
     return BridgeReply(
-        text=f"🤖 Choose a model for this chat\n\nCurrent: {cur}  [{src}]",
+        text=f"🤖 <b>Выбор модели</b>\n\nТекущая: <code>{html.escape(cur)}</code> [{src}]\nДвижок: <b>{engine.upper()}</b>",
         keyboard=_model_keyboard(cs.model),
     )
 
@@ -406,6 +425,82 @@ async def _run_git_diff(workdir: str, args: str = "") -> tuple[str, str]:
         return "", f"Не удалось выполнить git diff: {exc}"
 
 
+_ACTIVE_AUTH_CANCELS: dict[int, asyncio.Event] = {}
+
+
+async def _render_auth_card() -> BridgeReply:
+    from src.codex_runner import check_codex_auth
+    codex_ok, codex_status = await check_codex_auth()
+
+    agy_status = "Авторизован (OAuth Google)"
+    codex_status_text = f"Авторизован ({codex_status})" if codex_ok else "Не авторизован"
+    codex_icon = "🟢" if codex_ok else "⚪️"
+
+    text = (
+        "🔐 <b>Статус авторизации CLI-движков</b>\n\n"
+        f"🟢 <b>Google Antigravity:</b> {agy_status}\n"
+        f"{codex_icon} <b>OpenAI Codex:</b> {codex_status_text}\n\n"
+        "<i>Codex CLI поддерживает авторизацию по протоколу OAuth Device Code. "
+        "Вы можете войти или обновить токен прямо из Telegram.</i>"
+    )
+
+    btn_text = "🔄 Переавторизовать Codex" if codex_ok else "🔑 Войти в OpenAI Codex"
+    keyboard = [
+        [{"text": btn_text, "callback_data": "auth:codex"}],
+        [{"text": "← Назад к настройкам", "callback_data": "nav:settings"}],
+    ]
+    return BridgeReply(text=text, keyboard=keyboard)
+
+
+async def _run_device_auth_flow(tg: Any, chat_id: int, message_id: int):
+    from src.codex_runner import run_codex_device_auth
+
+    cancel_ev = asyncio.Event()
+    _ACTIVE_AUTH_CANCELS[chat_id] = cancel_ev
+
+    async def on_code(url: str, code: str):
+        try:
+            await tg.edit_message_text(
+                chat_id,
+                message_id,
+                f"🔐 <b>Авторизация в OpenAI Codex</b>\n\n"
+                f"1️⃣ Перейдите по ссылке:\n{url}\n\n"
+                f"2️⃣ Введите код:\n<code>{code}</code> <i>(нажмите для копирования)</i>\n\n"
+                f"⏳ <i>Ожидание подтверждения в браузере (до 15 минут)...</i>",
+                keyboard=[[{"text": "❌ Отмена", "callback_data": "auth:cancel"}]],
+            )
+        except Exception as e:
+            LOG.warning("Failed to update auth message: %s", e)
+
+    try:
+        ok, msg = await run_codex_device_auth(on_code, cancel_event=cancel_ev)
+        if ok:
+            await tg.edit_message_text(
+                chat_id,
+                message_id,
+                "✅ <b>Авторизация в OpenAI Codex успешно завершена!</b>\n\n"
+                "Теперь вам доступны модели GPT-6.1 Sol, GPT-6 Astra, GPT-6.1 Terra и др.",
+                keyboard=[
+                    [{"text": "🤖 Выбрать модель Codex", "callback_data": "nav:model"}],
+                    [{"text": "⚙️ Настройки", "callback_data": "nav:settings"}],
+                ],
+            )
+        else:
+            await tg.edit_message_text(
+                chat_id,
+                message_id,
+                f"⚠️ <b>Авторизация не завершена</b>\n\n{msg}",
+                keyboard=[
+                    [{"text": "🔄 Попробовать снова", "callback_data": "auth:codex"}],
+                    [{"text": "← Назад к настройкам", "callback_data": "nav:settings"}],
+                ],
+            )
+    except Exception as e:
+        LOG.error("Device auth flow failed: %s", e)
+    finally:
+        _ACTIVE_AUTH_CANCELS.pop(chat_id, None)
+
+
 async def handle_text_command(
     msg: "InboundMessage",
     cs: "ChatState",
@@ -432,6 +527,17 @@ async def handle_text_command(
         return BridgeReply(render_status(cs, cfg))
     if cmd == "/settings":
         return _render_settings(cs, cfg)
+    if cmd in ("/auth", "/login"):
+        return await _render_auth_card()
+    if cmd == "/engine":
+        if args:
+            clean_eng = args.strip().lower()
+            if clean_eng in ("agy", "codex"):
+                cs.engine = clean_eng
+                return BridgeReply(f"⚡️ Движок переключен на <b>{clean_eng.upper()}</b>")
+            return BridgeReply("⚠️ Доступные движки: agy, codex")
+        cur_eng = getattr(cs, "engine", "") or get_engine_for_model(cs.model or cfg.agy.model)
+        return BridgeReply(f"⚡️ Текущий движок: <b>{cur_eng.upper()}</b>\nИспользуйте: /engine agy | /engine codex")
     if cmd == "/effort":
         if args:
             cs.effort = args
@@ -446,7 +552,8 @@ async def handle_text_command(
         if args:
             if is_valid_model(args):
                 cs.model = args
-                return BridgeReply(f"🤖 Модель изменена на {args}")
+                cs.engine = get_engine_for_model(args)
+                return BridgeReply(f"🤖 Модель изменена на <b>{args}</b> (Движок: <b>{cs.engine.upper()}</b>)")
             return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}")
         return _render_model_picker(cs, cfg)
     if cmd == "/mode":
@@ -464,7 +571,8 @@ async def handle_text_command(
     if cmd in ("/reset", "/new", "/clear"):
         cs.has_session = False
         cs.conversation_id = ""
-        return BridgeReply("🧹 Сессия сброшена. Следующее сообщение начнет чистую сессию.")
+        cs.codex_thread_id = ""
+        return BridgeReply("🧹 Сессия сброшена для обоих движков (AGY и Codex). Следующее сообщение начнет чистую сессию.")
     if cmd == "/stop":
         import src.turn
         if src.turn.request_stop(
@@ -605,14 +713,36 @@ async def handle_callback(
     cq: "CallbackQuery",
     cs: "ChatState",
     cfg: "Config",
+    tg: Any = None,
 ) -> BridgeReply:
     """Handle inline-keyboard button taps. Always returns a reply to render."""
     data = cq.data
 
+    if data == "noop":
+        return BridgeReply(None, toast="")
     if data == "nav:status":
         return BridgeReply(render_status(cs, cfg))
     if data == "nav:settings":
         return _render_settings(cs, cfg)
+    if data == "nav:auth":
+        return await _render_auth_card()
+    if data == "auth:codex":
+        if tg:
+            asyncio.create_task(_run_device_auth_flow(tg, cq.chat_id, cq.message_id))
+        return BridgeReply(
+            "⏳ <b>Запуск авторизации OpenAI Codex...</b>\n\nОжидайте ссылку и одноразовый код.",
+            keyboard=[[{"text": "❌ Отмена", "callback_data": "auth:cancel"}]],
+            toast="Запуск авторизации...",
+        )
+    if data == "auth:cancel":
+        cancel_ev = _ACTIVE_AUTH_CANCELS.get(cq.chat_id)
+        if cancel_ev:
+            cancel_ev.set()
+        return BridgeReply(
+            "❌ Авторизация отменена.",
+            keyboard=[[{"text": "← Назад к настройкам", "callback_data": "nav:settings"}]],
+            toast="Отменено",
+        )
     if data.startswith("getfile:"):
         relpath = data.partition(":")[2]
         resolved = safe_resolve_workspace_file(cs.chat_dir, relpath)
@@ -658,6 +788,7 @@ async def handle_callback(
     if data == "R":
         cs.has_session = False
         cs.conversation_id = ""
+        cs.codex_thread_id = ""
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Сессия сброшена")
         
@@ -670,6 +801,18 @@ async def handle_callback(
 
     if data.startswith("m:"):
         choice = data[2:]
+        if choice == _DEFAULT_TOKEN:
+            cs.model = ""
+            cs.engine = ""
+            toast = "Настройки по умолчанию"
+        elif is_valid_model(choice):
+            cs.model = choice
+            cs.engine = get_engine_for_model(choice)
+            toast = f"Модель: {choice} ({cs.engine.upper()})"
+        else:
+            toast = "Неизвестный выбор"
+        rep = _render_settings(cs, cfg)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
         if choice == _DEFAULT_TOKEN:
             cs.model = ""
             toast = "Настройки по умолчанию"
@@ -740,6 +883,7 @@ async def handle_callback(
     if data == "do_compact":
         cs.has_session = False
         cs.conversation_id = ""
+        cs.codex_thread_id = ""
         cs.turn_count = 0
         kb: InlineKeyboard = [
             [{"text": "📁 Диалоги", "callback_data": "nav:projects"}],
@@ -747,7 +891,7 @@ async def handle_callback(
         ]
         return BridgeReply(
             "🗜️ <b>Контекст сессии сжат!</b>\n\n"
-            "Предыдущая история сохранена в проекте, а текущий диалог сброшен. "
+            "История сохранена в памяти проекта, сырые логи очищены. "
             "Следующее сообщение начнет чистый контекст с минимальным потреблением токенов квоты.",
             keyboard=kb,
             toast="Контекст сжат",

@@ -155,7 +155,7 @@ def _conversation_exists_on_disk(cid: str) -> bool:
     return os.path.exists(conv_db) or os.path.exists(brain_dir)
 
 
-async def execute_agy(
+async def _execute_agy_internal(
     tg: "_TelegramLike", chat_id: int, prompt: str, msg: "InboundMessage",
     cs: "ChatState", cfg: "Config", agy_path: str,
 ) -> tuple[str, int]:
@@ -327,6 +327,154 @@ async def execute_agy(
         return INVALID_MODEL_EXPLANATION_MSG, result.exit_code
 
     return clean_system_messages(result.text or ""), result.exit_code
+
+
+async def execute_codex(
+    tg: "_TelegramLike",
+    chat_id: int,
+    prompt: str,
+    msg: "InboundMessage",
+    cs: "ChatState",
+    cfg: "Config",
+    codex_path: str = "/usr/local/bin/codex",
+) -> tuple[str, int]:
+    """Run one codex turn with inline status updater and token tracking."""
+    from src.codex_runner import run_codex
+
+    status_msg_id = None
+    run_nonce = secrets.token_urlsafe(6)
+    try:
+        sent = await tg.send_message(
+            chat_id,
+            "🔄 Думаю (Codex)...",
+            keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{run_nonce}"}]],
+            message_thread_id=msg.message_thread_id,
+            reply_to_message_id=msg.message_id if chat_id < 0 else None,
+        )
+        if sent:
+            status_msg_id = sent
+    except Exception:
+        pass
+
+    updater = None
+    if status_msg_id:
+        updater = StatusUpdater(tg, chat_id, status_msg_id, run_nonce)
+
+    async def handle_codex_event(data: dict):
+        if data.get("event") == "init":
+            tid = data.get("conversation_id")
+            if tid:
+                cs.codex_thread_id = tid
+                if not any(p.get("id") == tid for p in cs.projects):
+                    snippet = prompt[:40] + "..." if len(prompt) > 40 else prompt
+                    cs.projects.insert(0, {"id": tid, "snippet": f"[Codex] {snippet}"})
+                    cs.projects = cs.projects[:10]
+            if updater:
+                await updater.update("💬 Подключение к OpenAI...")
+
+        if not updater:
+            return
+
+        if data.get("event") == "step_update":
+            su = data.get("step_update", {})
+            stype = su.get("step_type")
+            state = su.get("state")
+            if stype == "tool" and state == "ACTIVE":
+                info = su.get("tool_info", {}).get("parameters", {})
+                cmd = str(info.get("CommandLine") or "").strip().split("\n")[0]
+                if len(cmd) > 55:
+                    cmd = cmd[:52] + "..."
+                await updater.update(f"💻 Команда: {cmd}")
+            elif stype == "agent_response" and state == "ACTIVE":
+                await updater.update("💬 Формирую ответ...")
+
+    hb_stop = asyncio.Event()
+    hb_task = asyncio.create_task(_heartbeat(tg, chat_id, msg.message_thread_id, hb_stop))
+    stop_event = asyncio.Event()
+    key = session_key(chat_id, msg.message_thread_id)
+    active_run = ActiveRun(stop_event, run_nonce, getattr(msg, "user_id", 0), status_msg_id)
+    ACTIVE_STOPS[key] = active_run
+    turn_start = time.perf_counter()
+
+    try:
+        timeout_s = parse_timeout_seconds(cs.print_timeout, default=AGY_TIMEOUT_S)
+        result = await run_codex(
+            prompt,
+            chat_dir=cs.chat_dir,
+            thread_id=cs.codex_thread_id,
+            model=cs.model,
+            codex_path=codex_path,
+            timeout=timeout_s,
+            on_event=handle_codex_event,
+            stop_event=stop_event,
+        )
+        if result.thread_id:
+            cs.codex_thread_id = result.thread_id
+            cs.has_session = True
+    finally:
+        if ACTIVE_STOPS.get(key) is active_run:
+            ACTIVE_STOPS.pop(key, None)
+        hb_stop.set()
+        hb_task.cancel()
+        if updater:
+            await updater.close()
+            try:
+                await tg.delete_message(chat_id, status_msg_id)
+            except Exception:
+                pass
+        try:
+            await hb_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    elapsed = int((time.perf_counter() - turn_start) * 1000)
+    LOG.info(
+        "codex turn chat=%d cwd=%s exit=%d ms=%d in_tok=%d cached_tok=%d out_tok=%d reasoning_tok=%d reply_len=%d",
+        chat_id, cs.chat_dir, result.exit_code, elapsed,
+        result.input_tokens, result.cached_input_tokens, result.output_tokens,
+        result.reasoning_output_tokens, len(result.text or ""),
+    )
+
+    clean_text = clean_system_messages(result.text or "")
+    if result.exit_code == 0 and result.input_tokens > 0:
+        clean_text += (
+            f"\n\n📊 <i>[Codex: in={result.input_tokens} (кэш={result.cached_input_tokens}), "
+            f"out={result.output_tokens}, reasoning={result.reasoning_output_tokens}]</i>"
+        )
+    return clean_text, result.exit_code
+
+
+async def execute_turn(
+    tg: "_TelegramLike",
+    chat_id: int,
+    prompt: str,
+    msg: "InboundMessage",
+    cs: "ChatState",
+    cfg: "Config",
+    agy_path: str = "agy",
+    codex_path: str = "/usr/local/bin/codex",
+) -> tuple[str, int]:
+    """Execute a turn with the appropriate engine (agy or codex), applying token handoff."""
+    from src.models import get_engine_for_model
+    from src.context_compactor import prepare_turn_prompt
+
+    effective_model = cs.model or cfg.agy.model
+    target_engine = get_engine_for_model(effective_model)
+    if cs.engine and cs.engine in ("agy", "codex"):
+        target_engine = cs.engine
+
+    # Apply token handoff if switching engines
+    prompt_for_engine = prepare_turn_prompt(prompt, cs, target_engine)
+    cs.engine = target_engine
+
+    if target_engine == "codex":
+        return await execute_codex(tg, chat_id, prompt_for_engine, msg, cs, cfg, codex_path)
+    else:
+        return await _execute_agy_internal(tg, chat_id, prompt_for_engine, msg, cs, cfg, agy_path)
+
+
+# Backward compatibility alias
+execute_agy = execute_turn
 
 
 # Explanatory message when model/account quota is exceeded

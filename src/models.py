@@ -1,7 +1,9 @@
-"""Dynamic model discovery from agy CLI."""
+"""Dynamic model discovery from agy CLI and Codex CLI."""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -26,9 +28,22 @@ FALLBACK_MODELS: list[tuple[str, str]] = [
     ("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
 ]
 
+FALLBACK_CODEX_MODELS: list[tuple[str, str]] = [
+    ("gpt-6.1-sol", "GPT-6.1 Sol (Main)"),
+    ("gpt-6-astra", "GPT-6 Astra (Deep Reasoning)"),
+    ("gpt-6.1-terra", "GPT-6.1 Terra (Balanced)"),
+    ("gpt-6-sol", "GPT-6 Sol (Fast)"),
+    ("gpt-5.6-sol", "GPT-5.6 Sol (Lightweight)"),
+    ("gpt-5.6-terra", "GPT-5.6 Terra (Fast)"),
+    ("gpt-5.6-luna", "GPT-5.6 Luna (Ultra Fast)"),
+]
+
 _CACHE_TTL_S = 300.0  # 5 minutes
 _cached_models: list[tuple[str, str]] | None = None
 _cached_at: float = 0.0
+
+_cached_codex_models: list[tuple[str, str]] | None = None
+_cached_codex_at: float = 0.0
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
@@ -87,3 +102,45 @@ def get_available_models(agy_path: str = "agy", force_refresh: bool = False) -> 
     if _cached_models:
         return _cached_models
     return list(FALLBACK_MODELS)
+
+
+def get_available_codex_models(force_refresh: bool = False) -> list[tuple[str, str]]:
+    """Fetch available Codex models from ~/.codex/models_cache.json or fallback."""
+    global _cached_codex_models, _cached_codex_at
+    now = time.time()
+    if not force_refresh and _cached_codex_models is not None and (now - _cached_codex_at) < _CACHE_TTL_S:
+        return _cached_codex_models
+
+    cache_file = os.path.expanduser("~/.codex/models_cache.json")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            items = []
+            for m in data.get("models", []):
+                slug = m.get("slug")
+                name = m.get("display_name") or slug
+                if slug and slug != "codex-auto-review":
+                    items.append((slug, name))
+            if items:
+                _cached_codex_models = items
+                _cached_codex_at = now
+                return items
+        except Exception as e:
+            LOG.warning("Failed to parse ~/.codex/models_cache.json: %s", e)
+
+    if _cached_codex_models:
+        return _cached_codex_models
+    return list(FALLBACK_CODEX_MODELS)
+
+
+def get_engine_for_model(model: str) -> str:
+    """Return 'codex' or 'agy' depending on the model name."""
+    if not model:
+        return "agy"
+    m = model.lower()
+    if m.startswith(("gpt-", "codex-", "o1", "o3", "o4")):
+        if "gpt-oss" in m:
+            return "agy"
+        return "codex"
+    return "agy"

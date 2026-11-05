@@ -418,7 +418,7 @@ async def _process_callback(
                 pass
         return
 
-    reply = await handle_callback(cq, cs, cfg)
+    reply = await handle_callback(cq, cs, cfg, tg=tg)
     save_state(state_path, state)
 
     try:
