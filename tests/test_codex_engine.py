@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.codex_runner import CodexResult, _build_codex_args, _split_thoughts_and_final, check_codex_auth
+from src.codex_runner import (
+    CodexResult,
+    _build_codex_args,
+    _split_thoughts_and_final,
+    check_codex_auth,
+    run_codex_device_auth,
+)
 from src.context_compactor import build_handoff_digest, prepare_turn_prompt
 from src.models import get_available_codex_models, get_engine_for_model
 from src.state import ChatState
@@ -128,3 +134,38 @@ async def test_check_codex_auth_logged_in():
         ok, msg = await check_codex_auth()
         assert ok is True
         assert "Logged in using ChatGPT" in msg
+
+
+@pytest.mark.asyncio
+async def test_run_codex_device_auth_with_ansi_colors():
+    with patch("asyncio.create_subprocess_exec") as mock_exec:
+        proc = MagicMock()
+        proc.pid = 1234
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            side_effect=[
+                b"Welcome to Codex\n",
+                b"1. Open this link in your browser and sign in to your account\n",
+                b"   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n",
+                b"2. Enter this one-time code (expires in 15 minutes)\n",
+                b"   \x1b[94m3MZW-PYSFB\x1b[0m\n",
+                b"",
+            ]
+        )
+        proc.stdout = mock_stdout
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = 0
+        mock_exec.return_value = proc
+
+        reported_url = ""
+        reported_code = ""
+
+        async def on_code(url: str, code: str) -> None:
+            nonlocal reported_url, reported_code
+            reported_url = url
+            reported_code = code
+
+        ok, msg = await run_codex_device_auth(on_code)
+        assert ok is True
+        assert reported_url == "https://auth.openai.com/codex/device"
+        assert reported_code == "3MZW-PYSFB"

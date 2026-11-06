@@ -396,7 +396,8 @@ async def run_codex(
 
 # --- Authentication & Device Auth flow ---
 
-_DEVICE_URL_RE = re.compile(r"https://auth\.openai\.com/[^\s]+")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_DEVICE_URL_RE = re.compile(r"https://auth\.openai\.com/[^\s\x1b]+")
 _DEVICE_CODE_RE = re.compile(r"\b([A-Z0-9]{4,5}-[A-Z0-9]{4,5})\b")
 
 
@@ -433,11 +434,14 @@ async def run_codex_device_auth(
     """
     _reap_zombies()
     try:
-        # We redirect stderr to stdout so all auth prompts are read in order
+        env = dict(os.environ)
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "dumb"
         proc = await asyncio.create_subprocess_exec(
             codex_path, "login", "--device-auth",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=env,
             start_new_session=True,
         )
     except Exception as e:
@@ -454,9 +458,10 @@ async def run_codex_device_auth(
             line = await proc.stdout.readline()
             if not line:
                 break
-            text = line.decode("utf-8", errors="replace").strip()
-            if not text:
+            raw_text = line.decode("utf-8", errors="replace").strip()
+            if not raw_text:
                 continue
+            text = _ANSI_RE.sub("", raw_text)
 
             url_match = _DEVICE_URL_RE.search(text)
             if url_match and not captured_url:
@@ -492,11 +497,14 @@ async def run_codex_device_auth(
                 pass
             return False, "Авторизация отменена пользователем"
 
-        if wait_proc in done:
-            rc = proc.returncode
-            if rc == 0:
-                return True, "Авторизация успешно завершена!"
-            return False, f"Ошибка авторизации (код {rc})"
+        try:
+            rc = await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            rc = proc.returncode if proc.returncode is not None else 1
+
+        if rc == 0:
+            return True, "Авторизация успешно завершена!"
+        return False, f"Ошибка авторизации (код {rc})"
 
         # Timeout
         try:
