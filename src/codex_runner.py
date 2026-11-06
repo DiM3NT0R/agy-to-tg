@@ -125,6 +125,7 @@ async def run_codex(
     observed_thread_id = thread_id
     message_chunks: list[str] = []
     stderr_chunks: list[bytes] = []
+    codex_error_message = ""
     input_tokens = 0
     cached_input_tokens = 0
     output_tokens = 0
@@ -156,7 +157,7 @@ async def run_codex(
                 pass
 
     async def read_stdout():
-        nonlocal observed_thread_id, tool_active, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens
+        nonlocal observed_thread_id, tool_active, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, codex_error_message
         assert process.stdout is not None
         while True:
             line = await process.stdout.readline()
@@ -180,6 +181,17 @@ async def run_codex(
                     observed_thread_id = tid
                     if on_event:
                         await on_event({"event": "init", "conversation_id": tid})
+
+            elif ev_type == "error":
+                err_msg = str(data.get("message") or "").strip()
+                if err_msg:
+                    codex_error_message = err_msg
+
+            elif ev_type == "turn.failed":
+                err_obj = data.get("error", {})
+                err_msg = err_obj.get("message") if isinstance(err_obj, dict) else str(err_obj)
+                if err_msg:
+                    codex_error_message = str(err_msg).strip()
 
             elif ev_type == "item.started":
                 item = data.get("item", {})
@@ -217,6 +229,10 @@ async def run_codex(
                                     "state": "ACTIVE",
                                 },
                             })
+                elif itype == "error":
+                    err_msg = str(item.get("message") or "").strip()
+                    if err_msg:
+                        codex_error_message = err_msg
 
             elif ev_type == "turn.completed":
                 tool_active = False
@@ -350,9 +366,20 @@ async def run_codex(
     thoughts, final_text = _split_thoughts_and_final(message_chunks)
 
     err_text = final_text
-    if not err_text and (process.returncode or 0) != 0 and stderr_out.strip():
-        clean_err = re.sub(r"\x1b\[[0-9;]*[mK]", "", stderr_out).strip()
-        err_text = f"⚠️ Ошибка Codex (код {process.returncode}):\n<code>{html.escape(clean_err[:1000])}</code>"
+    if not err_text and (process.returncode or 0) != 0:
+        if codex_error_message:
+            low_msg = codex_error_message.lower()
+            if "usage limit" in low_msg or "quota" in low_msg or "rate limit" in low_msg:
+                err_text = (
+                    f"⚠️ <b>Исчерпан лимит использования OpenAI (Usage limit reached)</b>\n\n"
+                    f"{html.escape(codex_error_message)}\n\n"
+                    "💡 <i>Переключитесь на другую модель (например, Gemini Flash) через /model или смените движок на AGY через /engine agy.</i>"
+                )
+            else:
+                err_text = f"⚠️ Ошибка Codex:\n<code>{html.escape(codex_error_message)}</code>"
+        elif stderr_out.strip():
+            clean_err = re.sub(r"\x1b\[[0-9;]*[mK]", "", stderr_out).strip()
+            err_text = f"⚠️ Ошибка Codex (код {process.returncode}):\n<code>{html.escape(clean_err[:1000])}</code>"
 
     return CodexResult(
         text=err_text,

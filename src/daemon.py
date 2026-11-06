@@ -216,7 +216,7 @@ async def _do_turn(
                 reply_kb.extend(build_options_keyboard(opts, prefix="opt"))
             if reply:
                 reply_kb.append([{"text": "🔊 Озвучить", "callback_data": "tts"}])
-        elif "исчерпана квота" in reply.lower() or "quota" in reply.lower():
+        elif any(kw in reply.lower() for kw in ("исчерпана квота", "quota", "usage limit", "лимит использования")):
             reply_kb = [
                 [{"text": "⚡ Перейти на Gemini Flash", "callback_data": "m:gemini-3.8-flash-high"}],
                 [{"text": "📊 Проверить лимиты", "callback_data": "nav:limits"}, {"text": "🤖 Другая модель", "callback_data": "nav:model"}],
