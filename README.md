@@ -1,4 +1,4 @@
-# OmniAgent Bridge (SubAgent Bridge)
+# Agent TG Bridge (`agent-tg-bridge`)
 
 [English](#english) | [Русский](#русский)
 
@@ -7,7 +7,7 @@
 <a name="english"></a>
 ## English
 
-**OmniAgent Bridge** is a feature-rich, asynchronous Telegram gateway for interacting with autonomous coding AI agents and CLI tools directly from your messenger.
+**Agent TG Bridge** is a feature-rich, asynchronous Telegram gateway for interacting with autonomous coding AI agents and CLI tools directly from your messenger.
 
 Unlike conventional API wrappers that charge per-token, this bridge enables using your existing **flat-rate subscriptions** (such as **Google Antigravity** and **ChatGPT Plus/Pro / OpenAI Codex**) via official CLI tooling, alongside support for self-hosted and third-party **OpenAI-compatible APIs**.
 
@@ -84,7 +84,7 @@ systemctl --user enable --now antigravity-telegram-bridge.service
 <a name="русский"></a>
 ## Русский
 
-**OmniAgent Bridge** (ранее `agy-to-tg`) — универсальный асинхронный Telegram-мост для работы с автономными AI-агентами разработки и CLI-инструментами прямо из мессенджера.
+**Agent TG Bridge** (ранее `agy-to-tg`) — универсальный асинхронный Telegram-мост для работы с автономными AI-агентами разработки и CLI-инструментами прямо из мессенджера.
 
 Главное преимущество моста — возможность использовать ваши **существующие подписки** (**Google Antigravity** и **ChatGPT Plus/Pro / OpenAI Codex**) через официальные CLI без платы за токены, а также подключение локальных и облачных **OpenAI-совместимых API**.
 

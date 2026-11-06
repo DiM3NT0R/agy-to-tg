@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "omniagent-telegram-bridge"
+name = "agent-tg-bridge"
 version = "0.2.0"
 description = "Universal Telegram gateway for subscription AI CLI agents (Antigravity, Codex) and APIs"
 readme = "README.md"
