@@ -35,6 +35,15 @@ class CodexResult:
     cached_input_tokens: int = 0
     output_tokens: int = 0
     reasoning_output_tokens: int = 0
+    thoughts: tuple[str, ...] = ()
+
+
+def _split_thoughts_and_final(chunks: list[str]) -> tuple[tuple[str, ...], str]:
+    if len(chunks) > 1:
+        return tuple(chunks[:-1]), chunks[-1].strip()
+    elif chunks:
+        return (), chunks[0].strip()
+    return (), ""
 
 
 def _reap_zombies() -> None:
@@ -198,7 +207,8 @@ async def run_codex(
                             await on_event({
                                 "event": "step_update",
                                 "step_update": {
-                                    "step_type": "agent_response",
+                                    "step_type": "thought",
+                                    "text": text,
                                     "state": "ACTIVE",
                                 },
                             })
@@ -262,7 +272,7 @@ async def run_codex(
             await _terminate_process_group(signal.SIGTERM, grace_s=1.5)
             main_task.cancel()
             await process.wait()
-            text = "\n\n".join(message_chunks).strip()
+            thoughts, text = _split_thoughts_and_final(message_chunks)
             if text:
                 text += "\n\n🛑 [Остановлено пользователем]"
             stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace") + "\n[stopped by user]"
@@ -271,34 +281,39 @@ async def run_codex(
                 exit_code=130,
                 stderr=stderr_out,
                 thread_id=observed_thread_id,
+                thoughts=thoughts,
             )
 
         elif inactivity_task in done:
             await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
             main_task.cancel()
             await process.wait()
+            thoughts, text = _split_thoughts_and_final(message_chunks)
             msg = f"codex timed out: no status update for {int(inactivity_timeout)}s"
             raw_err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
             stderr_out = f"{raw_err}\n{msg}" if raw_err else msg
             return CodexResult(
-                text="\n\n".join(message_chunks).strip(),
+                text=text,
                 exit_code=124,
                 stderr=stderr_out,
                 thread_id=observed_thread_id,
+                thoughts=thoughts,
             )
 
         elif not done:  # Total timeout expired
             await _terminate_process_group(signal.SIGTERM, grace_s=1.0)
             main_task.cancel()
             await process.wait()
+            thoughts, text = _split_thoughts_and_final(message_chunks)
             msg = f"codex timed out after {timeout}s"
             raw_err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
             stderr_out = f"{raw_err}\n{msg}" if raw_err else msg
             return CodexResult(
-                text="\n\n".join(message_chunks).strip(),
+                text=text,
                 exit_code=124,
                 stderr=stderr_out,
                 thread_id=observed_thread_id,
+                thoughts=thoughts,
             )
 
         else:
@@ -327,7 +342,7 @@ async def run_codex(
         gc.collect()
 
     stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-    final_text = "\n\n".join(message_chunks).strip()
+    thoughts, final_text = _split_thoughts_and_final(message_chunks)
 
     return CodexResult(
         text=final_text,
@@ -338,6 +353,7 @@ async def run_codex(
         cached_input_tokens=cached_input_tokens,
         output_tokens=output_tokens,
         reasoning_output_tokens=reasoning_output_tokens,
+        thoughts=thoughts,
     )
 
 

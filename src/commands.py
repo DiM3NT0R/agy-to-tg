@@ -582,11 +582,22 @@ async def handle_text_command(
         return BridgeReply("⚠️ Нет активной задачи для остановки.")
     if cmd == "/thinking":
         mode = args.strip().lower()
-        if mode in ("on", "true", "1"):
-            return BridgeReply("💭 Отображение процесса мышления недоступно в этом режиме.")
-        if mode in ("off", "false", "0"):
-            return BridgeReply("💭 Процесс мышления уже скрыт.")
-        return BridgeReply("💭 Процесс мышления не поддерживается.")
+        if mode in ("live", "on", "1"):
+            cs.thinking = "live"
+            return BridgeReply("💭 <b>Отображение размышлений: ВЖИВУЮ</b>\n\nМодель выводит свои мысли и чекпоинты в реальном времени во время работы, не захламляя итоговый ответ.")
+        if mode in ("all", "full"):
+            cs.thinking = "all"
+            return BridgeReply("💭 <b>Отображение размышлений: ПОЛНОЕ</b>\n\nРазмышления транслируются в реальном времени, а в конце сворачиваются в цитату перед итоговым ответом.")
+        if mode in ("off", "0", "hide"):
+            cs.thinking = "off"
+            return BridgeReply("💭 <b>Отображение размышлений: ВЫКЛ</b>\n\nВ статусе отображаются только выполняемые команды и таймер.")
+        cur_mode = getattr(cs, "thinking", "live")
+        return BridgeReply(
+            f"💭 <b>Режим отображения размышлений (Thinking):</b> <code>{cur_mode}</code>\n\n"
+            "• <code>/thinking live</code> — выводить размышления в реальном времени в статусе (по умолчанию)\n"
+            "• <code>/thinking all</code> — выводить в статусе и сворачивать в цитату в конце\n"
+            "• <code>/thinking off</code> — скрыть размышления"
+        )
     if cmd == "/compact":
         if not cs.has_session or not cs.conversation_id:
             return BridgeReply("ℹ️ В текущем чате нет активной сессии для сжатия.")

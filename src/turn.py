@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import secrets
@@ -86,6 +87,8 @@ class StatusUpdater:
         self.run_nonce = run_nonce
         self.last_update = 0.0
         self.current_text = "Инициализация..."
+        self.current_thought = ""
+        self.current_tool = ""
         self.pending_task = None
         self.closed = False
         self.start_time = time.time()
@@ -95,39 +98,74 @@ class StatusUpdater:
 
     async def _ticker(self):
         while not self.closed:
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(4.0)
             if self.closed:
                 break
-            if self.current_text:
-                await self._edit(self.current_text)
+            await self._edit()
+
+    def _build_display_text(self) -> str:
+        self.tick += 1
+        spin = self.spinner[self.tick % len(self.spinner)]
+        elapsed = int(time.time() - self.start_time)
+        m = elapsed // 60
+        s = elapsed % 60
+
+        header = f"{spin} [{m:02d}:{s:02d}]"
+
+        lines = []
+        if self.current_thought:
+            lines.append(f"{header} <b>Выполняю задачу...</b>\n")
+            thought_text = self.current_thought.strip()
+            if len(thought_text) > 350:
+                thought_text = thought_text[:347] + "..."
+            lines.append(f"💭 <i>{html.escape(thought_text)}</i>")
+            if self.current_tool:
+                lines.append(f"\n{self.current_tool}")
+        else:
+            text = self.current_tool or self.current_text
+            lines.append(f"{header} {text}")
+
+        return "\n".join(lines)
 
     async def update(self, new_text: str):
         if self.closed:
             return
         self.current_text = new_text
+        self.current_tool = new_text
+        await self._schedule_edit()
+
+    async def update_thought(self, thought_text: str):
+        if self.closed or not thought_text.strip():
+            return
+        self.current_thought = thought_text.strip()
+        self.current_tool = ""
+        await self._schedule_edit()
+
+    async def update_tool(self, tool_text: str):
+        if self.closed:
+            return
+        self.current_tool = tool_text
+        await self._schedule_edit()
+
+    async def _schedule_edit(self):
         now = time.time()
         if now - self.last_update > 2.0:
             self.last_update = now
-            await self._edit(new_text)
+            await self._edit()
         else:
             if not (self.pending_task and not self.pending_task.done()):
                 delay = 2.0 - (now - self.last_update)
-                self.pending_task = asyncio.create_task(self._delayed_edit(new_text, delay))
+                self.pending_task = asyncio.create_task(self._delayed_edit(delay))
 
-    async def _delayed_edit(self, text: str, delay: float):
+    async def _delayed_edit(self, delay: float):
         await asyncio.sleep(delay)
         if not self.closed:
             self.last_update = time.time()
-            await self._edit(self.current_text)
+            await self._edit()
 
-    async def _edit(self, text: str):
+    async def _edit(self, text: str = ""):
         try:
-            self.tick += 1
-            spin = self.spinner[self.tick % len(self.spinner)]
-            elapsed = int(time.time() - self.start_time)
-            m = elapsed // 60
-            s = elapsed % 60
-            display_text = f"{spin} [{m:02d}:{s:02d}] {text}"
+            display_text = self._build_display_text()
             await self.tg.edit_message_text(
                 self.chat_id, 
                 self.message_id, 
@@ -379,12 +417,16 @@ async def execute_codex(
             su = data.get("step_update", {})
             stype = su.get("step_type")
             state = su.get("state")
-            if stype == "tool" and state == "ACTIVE":
+            if stype == "thought":
+                text = su.get("text", "")
+                if text:
+                    await updater.update_thought(text)
+            elif stype == "tool" and state == "ACTIVE":
                 info = su.get("tool_info", {}).get("parameters", {})
                 cmd = str(info.get("CommandLine") or "").strip().split("\n")[0]
                 if len(cmd) > 55:
                     cmd = cmd[:52] + "..."
-                await updater.update(f"💻 Команда: {cmd}")
+                await updater.update_tool(f"💻 <b>Команда:</b> <code>{html.escape(cmd)}</code>")
             elif stype == "agent_response" and state == "ACTIVE":
                 await updater.update("💬 Формирую ответ...")
 
@@ -436,11 +478,17 @@ async def execute_codex(
     )
 
     clean_text = clean_system_messages(result.text or "")
-    if result.exit_code == 0 and result.input_tokens > 0:
-        clean_text += (
-            f"\n\n📊 <i>[Codex: in={result.input_tokens} (кэш={result.cached_input_tokens}), "
-            f"out={result.output_tokens}, reasoning={result.reasoning_output_tokens}]</i>"
-        )
+    if result.exit_code == 0:
+        thinking_mode = getattr(cs, "thinking", "live")
+        if thinking_mode == "all" and result.thoughts:
+            bullets = "\n".join(f"• {th.strip()}" for th in result.thoughts)
+            clean_text = f"<blockquote expandable>💭 <b>Ход размышлений:</b>\n{bullets}</blockquote>\n\n{clean_text}"
+
+        if result.input_tokens > 0:
+            clean_text += (
+                f"\n\n📊 <i>[Codex: in={result.input_tokens} (кэш={result.cached_input_tokens}), "
+                f"out={result.output_tokens}, reasoning={result.reasoning_output_tokens}]</i>"
+            )
     return clean_text, result.exit_code
 
 

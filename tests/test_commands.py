@@ -49,10 +49,16 @@ async def test_info_no_session() -> None:
     assert "чистая" in reply.text.lower()
 
 
-async def test_thinking_not_available() -> None:
-    reply = await handle_text_command(_FakeMsg("/thinking on"), _state(), _cfg())
+async def test_thinking_command() -> None:
+    cs = _state()
+    reply = await handle_text_command(_FakeMsg("/thinking live"), cs, _cfg())
     assert reply is not None
-    assert "недоступно" in reply.text.lower()
+    assert cs.thinking == "live"
+    assert "вживую" in reply.text.lower()
+
+    reply_off = await handle_text_command(_FakeMsg("/thinking off"), cs, _cfg())
+    assert reply_off is not None
+    assert cs.thinking == "off"
 
 
 async def test_model_picker() -> None:

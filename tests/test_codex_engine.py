@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.codex_runner import CodexResult, _build_codex_args, check_codex_auth
+from src.codex_runner import CodexResult, _build_codex_args, _split_thoughts_and_final, check_codex_auth
 from src.context_compactor import build_handoff_digest, prepare_turn_prompt
 from src.models import get_available_codex_models, get_engine_for_model
 from src.state import ChatState
@@ -93,6 +93,28 @@ def test_context_compactor_handoff():
     cs.codex_thread_id = "thread-xyz"
     same = prepare_turn_prompt("Another question", cs, target_engine="codex")
     assert same == "Another question"
+
+
+def test_split_thoughts_and_final():
+    # Multiple messages: intermediate thoughts + final answer
+    chunks = [
+        "Thinking: check VPN logs",
+        "Thinking: ports are open",
+        "Final conclusion: VPN is working",
+    ]
+    thoughts, final_text = _split_thoughts_and_final(chunks)
+    assert thoughts == ("Thinking: check VPN logs", "Thinking: ports are open")
+    assert final_text == "Final conclusion: VPN is working"
+
+    # Single message
+    single_thoughts, single_text = _split_thoughts_and_final(["Only one answer"])
+    assert single_thoughts == ()
+    assert single_text == "Only one answer"
+
+    # Empty
+    empty_thoughts, empty_text = _split_thoughts_and_final([])
+    assert empty_thoughts == ()
+    assert empty_text == ""
 
 
 @pytest.mark.asyncio

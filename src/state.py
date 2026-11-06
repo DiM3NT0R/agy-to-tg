@@ -41,6 +41,7 @@ class ChatState:
     codex_thread_id: str = "" # UUID of the active Codex session
     engine: str = "" # "" (auto based on model) | "agy" | "codex"
     context_strategy: str = "compact" # "compact" | "full" | "clean"
+    thinking: str = "live" # "live" (live in status) | "all" (+expandable quote) | "off"
     projects: list[dict[str, str]] = field(default_factory=list) # [{'id': '...', 'snippet': '...'}]
     voice: str = ""  # "" → default "filipp"
     voice_speed: str = ""  # "" → default "1.1"
@@ -114,6 +115,7 @@ def _safe_chat_state(chats_root: Path, raw: dict) -> ChatState | None:
         codex_thread_id=raw.get("codex_thread_id", "") if isinstance(raw.get("codex_thread_id"), str) else "",
         engine=raw.get("engine", "") if isinstance(raw.get("engine"), str) else "",
         context_strategy=raw.get("context_strategy", "compact") if isinstance(raw.get("context_strategy"), str) else "compact",
+        thinking=raw.get("thinking", "live") if isinstance(raw.get("thinking"), str) else "live",
         projects=projects,
         voice=raw.get("voice", "") if isinstance(raw.get("voice"), str) else "",
         voice_speed=raw.get("voice_speed", "") if isinstance(raw.get("voice_speed"), str) else "",
