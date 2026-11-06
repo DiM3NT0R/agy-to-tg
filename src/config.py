@@ -12,7 +12,7 @@ class ConfigError(Exception):
     """Raised when config.json is missing, malformed, or fails validation."""
 
 
-_MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$")
+_MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-/:+]*$")
 _VALID_MODES = frozenset({"code", "plan"})
 
 

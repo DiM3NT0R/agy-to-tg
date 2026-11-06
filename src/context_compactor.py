@@ -120,6 +120,8 @@ def build_handoff_digest(
         prev_summary = get_agy_session_summary(conversation_id)
     elif from_engine == "codex":
         prev_summary = get_codex_session_summary(codex_thread_id)
+    elif from_engine in ("openai", "openai_compat"):
+        prev_summary = "OpenAI-compatible turn"
 
     if prev_summary:
         lines.append(f"• Текущий контекст/задача: {prev_summary}")

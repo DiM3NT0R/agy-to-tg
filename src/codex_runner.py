@@ -110,6 +110,15 @@ async def run_codex(
 
     env = os.environ.copy()
     try:
+        from src.codex_accounts import read_active_auth_data
+        active_auth = read_active_auth_data()
+        if active_auth and active_auth.get("OPENAI_BASE_URL"):
+            env["OPENAI_BASE_URL"] = str(active_auth["OPENAI_BASE_URL"])
+        elif active_auth and active_auth.get("base_url"):
+            env["OPENAI_BASE_URL"] = str(active_auth["base_url"])
+    except Exception:
+        pass
+    try:
         process = await asyncio.create_subprocess_exec(
             *args,
             cwd=chat_dir,

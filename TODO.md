@@ -2,52 +2,30 @@
 
 ## 🚀 Предстоящие задачи (Upcoming Features)
 
-### 1. Поддержка OpenAI-совместимых API провайдеров (`OpenAI-Compatible Engine`)
-Создание третьего движка в дополнение к `agy` и `codex` для прямого подключения любых сторонних и локальных моделей через стандартный `/v1/chat/completions` API.
+### 1. Поддержка OpenAI-совместимых API провайдеров (`OpenAI-Compatible Engine`) ✅ Реализовано
+Универсальный третий движок в дополнение к `agy` и `codex` для прямого подключения любых сторонних и локальных моделей через стандартный `/v1/chat/completions` API (CeapAI, OpenRouter, DeepSeek, Ollama, Groq, vLLM).
 
 #### 1.1. Поддерживаемые провайдеры и бэкенды
-- [ ] **OpenRouter** — доступ к Claude, Gemini, Llama 3, Mistral, Command-R через единый ключ.
-- [ ] **DeepSeek API** — официальный API для моделей DeepSeek-Coder / DeepSeek-V3 / DeepSeek-R1.
-- [ ] **Локальные серверы** (Self-hosted & Local LLMs):
-  - [ ] **Ollama** (`http://localhost:11434/v1`)
-  - [ ] **vLLM** (`http://localhost:8000/v1`)
-  - [ ] **LM Studio** / **LocalAI** (`http://localhost:1234/v1`)
-- [ ] **Groq Cloud** — сверхбыстрый инференс Llama 3 / Mixtral.
+- [x] **CeapAI (cheapai.io)** — агрегатор топовых моделей (Claude, GPT, Gemini, Grok) с единым ключом.
+- [x] **OpenRouter** — доступ к Claude, Gemini, Llama 3, Mistral, Command-R через единый ключ.
+- [x] **DeepSeek API** — официальный API для моделей DeepSeek-Coder / DeepSeek-V3 / DeepSeek-R1.
+- [x] **Локальные серверы** (Self-hosted & Local LLMs): Ollama, vLLM, LM Studio, LocalAI.
+- [x] **Groq Cloud** — сверхбыстрый инференс Llama 3 / Mixtral.
 
 #### 1.2. Архитектура и реализация движка
-- [ ] **Конфигурация провайдеров (`config.json`):**
-  ```json
-  "openai_compatible": {
-    "providers": {
-      "openrouter": {
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key": "sk-or-...",
-        "default_model": "anthropic/claude-3.5-sonnet"
-      },
-      "deepseek": {
-        "base_url": "https://api.deepseek.com/v1",
-        "api_key": "sk-...",
-        "default_model": "deepseek-reasoner"
-      },
-      "ollama": {
-        "base_url": "http://127.0.0.1:11434/v1",
-        "api_key": "ollama",
-        "default_model": "qwen2.5-coder:32b"
-      }
-    }
-  }
-  ```
-- [ ] **Потоковый клиент (`src/openai_compat_runner.py`):**
+- [x] **Универсальная форма настройки провайдеров в Telegram (`src/openai_providers.py`, `src/commands.py`):**
+  - Интерактивное меню управления в `/settings ➔ 🌐 API Провайдеры` (`nav:providers`).
+  - Команда `/provider add <id> <base_url> <api_key> [model]` (и быстрые пресеты `/provider add ceapai <key>`).
+  - Быстрое переключение активного провайдера в 1 клик, безопасное автоудаление сообщений с ключами.
+- [x] **Потоковый клиент с инструментами (`src/openai_compat_runner.py`):**
   - Поддержка Server-Sent Events (SSE) потокового вывода `/v1/chat/completions`.
-  - Трансляция reasoning / thinking токенов (например, `<think>` теги у DeepSeek R1 или поле `reasoning_content`) в `StatusUpdater`.
+  - Трансляция reasoning / thinking токенов (DeepSeek R1 reasoning_content и `<think>` теги) в `StatusUpdater`.
   - Захват usage-статистики (prompt_tokens, completion_tokens, reasoning_tokens).
-- [ ] **Автономные инструменты (Tool / Function Calling):**
-  - Реализация системного исполнителя команд (`run_command`), чтения (`read_file`) и записи файлов (`write_file`) через стандартные JSON Schema tools.
-  - Безопасная изоляция в рабочей директории чата (`cwd = chats_root / chat_id`).
-- [ ] **Динамическое обнаружение моделей:**
-  - Запрос к `GET {base_url}/models` для автоматического наполнения меню `/model` и `/settings`.
-- [ ] **Бесшовный переход между движками (Context Compactor):**
-  - Интеграция с `src/context_compactor.py` для сохранения контекста при переключении между `agy` ↔ `codex` ↔ `openai-compat`.
+  - Автономные инструменты рабочей директории (`run_command`, `read_file`, `write_file`).
+- [x] **Динамическое обнаружение моделей:**
+  - Запрос к `GET {base_url}/models` для автоматического наполнения меню `/model` и `/provider models`.
+- [x] **Бесшовный переход между движками (Context Compactor):**
+  - Интеграция с `src/context_compactor.py` при переключении `agy` ↔ `codex` ↔ `openai`.
 
 ---
 

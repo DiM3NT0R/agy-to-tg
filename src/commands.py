@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.media import clean_inbox, list_inbox, list_workspace_files, safe_resolve_workspace_file
-from src.models import FALLBACK_MODELS, get_available_models, get_available_codex_models, get_engine_for_model
+from src.models import (
+    FALLBACK_MODELS,
+    get_available_models,
+    get_available_codex_models,
+    get_available_openai_models,
+    get_engine_for_model,
+)
 from src.quota import fetch_quota_summary, render_limits_card
 from src.state import is_valid_model
 from src.telegram import InlineKeyboard
@@ -155,15 +161,18 @@ def _settings_keyboard() -> InlineKeyboard:
             {"text": "📁 Диалоги", "callback_data": "nav:projects"},
         ],
         [
+            {"text": "🌐 API Провайдеры", "callback_data": "nav:providers"},
             {"text": "🔐 Аккаунты Codex", "callback_data": "nav:auth"},
-            {"text": "🗜️ Сжать контекст", "callback_data": "do_compact"},
         ],
         [
             {"text": "🎙 Голос и озвучка", "callback_data": "nav:voice"},
             {"text": "📊 Лимиты и квоты", "callback_data": "nav:limits"},
         ],
         [
+            {"text": "🗜️ Сжать контекст", "callback_data": "do_compact"},
             {"text": "🧹 Сбросить сессию", "callback_data": "R"},
+        ],
+        [
             {"text": "🔄 Обновить", "callback_data": "nav:settings"},
         ],
     ]
@@ -241,6 +250,15 @@ def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
         marker = "● " if model_id == current_per_chat else "○ "
         label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
         rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
+
+    # Section 3: OpenAI-Compatible / Custom Provider (CeapAI, OpenRouter, DeepSeek, etc.)
+    openai_models = get_available_openai_models()
+    if openai_models:
+        rows.append([{"text": "── 🌐 OpenAI-Compatible API ──", "callback_data": "noop"}])
+        for model_id, display_name in openai_models[:12]:
+            marker = "● " if model_id == current_per_chat else "○ "
+            label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
+            rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
 
     default_marker = "● " if not current_per_chat else "○ "
     rows.append([
@@ -523,6 +541,117 @@ def _render_delete_accounts_menu(saved_accs: list[Any]) -> BridgeReply:
     return BridgeReply(text="\n".join(lines), keyboard=keyboard)
 
 
+async def _render_providers_card() -> BridgeReply:
+    from src.openai_providers import load_providers, get_active_provider
+
+    provs = load_providers()
+    active_prov = get_active_provider()
+
+    lines = [
+        "🌐 <b>OpenAI-совместимые API провайдеры</b>\n",
+        "Универсальное подключение сторонних API шлюзов и локальных серверов (CeapAI, OpenRouter, DeepSeek, Groq, Ollama, vLLM).\n",
+    ]
+
+    if active_prov:
+        lines.append(f"🟢 <b>Активный:</b> <b>{html.escape(active_prov.name)}</b>")
+        lines.append(f"   🌐 <b>Base URL:</b> <code>{html.escape(active_prov.base_url)}</code>")
+        lines.append(f"   🔑 <b>Ключ:</b> <code>{html.escape(active_prov.masked_key)}</code>")
+        lines.append(f"   🤖 <b>Модель:</b> <code>{html.escape(active_prov.default_model or 'default')}</code>")
+        if active_prov.models:
+            lines.append(f"   📚 <b>Обнаружено моделей:</b> {len(active_prov.models)}")
+    else:
+        lines.append("⚪️ <i>Провайдеры не настроены. Добавьте первый провайдер ниже:</i>")
+
+    keyboard: InlineKeyboard = []
+
+    # Fast switcher between saved providers
+    if len(provs) > 1:
+        lines.append(f"\n📁 <b>Сохраненные провайдеры ({len(provs)}):</b>")
+        for p in provs:
+            marker = "● " if p.is_active else "○ "
+            state = " — <i>активен</i>" if p.is_active else ""
+            lines.append(f"• {marker}<b>{html.escape(p.name)}</b> ({html.escape(p.base_url)}){state}")
+
+        row: list[dict[str, Any]] = []
+        for p in provs:
+            marker = "● " if p.is_active else "○ "
+            lbl = p.name
+            if len(lbl) > 16:
+                lbl = lbl[:14] + ".."
+            row.append({"text": f"{marker}{lbl}", "callback_data": f"prov:switch:{p.id}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+    # Action row
+    action_row: list[dict[str, Any]] = [
+        {"text": "➕ Добавить", "callback_data": "prov:add"},
+    ]
+    if active_prov:
+        action_row.append({"text": "🤖 Модели", "callback_data": "prov:models"})
+        action_row.append({"text": "🧪 Тест", "callback_data": "prov:test"})
+    keyboard.append(action_row)
+
+    manage_row: list[dict[str, Any]] = []
+    if provs:
+        manage_row.append({"text": "🗑 Удалить", "callback_data": "prov:del_menu"})
+    if manage_row:
+        keyboard.append(manage_row)
+
+    keyboard.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+def _render_add_provider_help() -> BridgeReply:
+    lines = [
+        "➕ <b>Добавление OpenAI-совместимого провайдера</b>\n",
+        "Отправьте команду в чат:",
+        "<code>/provider add &lt;id&gt; &lt;base_url&gt; &lt;api_key&gt; [модель]</code>\n",
+        "<b>Быстрые примеры:</b>",
+        "• <b>CeapAI (cheapai.io):</b>",
+        "<code>/provider add ceapai https://api.ceapai.io/v1 sk-... gpt-4o</code>",
+        "<i>(Или сокращенно: <code>/provider add ceapai sk-...</code>)</i>\n",
+        "• <b>OpenRouter:</b>",
+        "<code>/provider add openrouter sk-...</code>\n",
+        "• <b>DeepSeek:</b>",
+        "<code>/provider add deepseek sk-...</code>\n",
+        "• <b>Локальная Ollama:</b>",
+        "<code>/provider add ollama http://127.0.0.1:11434/v1 ollama qwen2.5-coder:32b</code>\n",
+        "<i>(Сообщение с секретным API ключом сразу удаляется ботом из чата)</i>",
+    ]
+    keyboard = [
+        [
+            {"text": "⚡️ CeapAI", "callback_data": "prov:preset:ceapai"},
+            {"text": "⚡️ OpenRouter", "callback_data": "prov:preset:openrouter"},
+        ],
+        [
+            {"text": "⚡️ DeepSeek", "callback_data": "prov:preset:deepseek"},
+            {"text": "⚡️ Ollama", "callback_data": "prov:preset:ollama"},
+        ],
+        [{"text": "← К провайдерам", "callback_data": "nav:providers"}],
+    ]
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+def _render_delete_providers_menu(provs: list[Any]) -> BridgeReply:
+    lines = [
+        "🗑 <b>Удаление API провайдера</b>\n",
+        "Выберите провайдер для удаления:\n",
+    ]
+    keyboard: InlineKeyboard = []
+    for p in provs:
+        marker = " [активен]" if p.is_active else ""
+        lines.append(f"• <b>{html.escape(p.name)}</b> ({html.escape(p.base_url)}){marker}")
+        lbl = p.name
+        if len(lbl) > 22:
+            lbl = lbl[:20] + ".."
+        keyboard.append([{"text": f"🗑 Удалить {lbl}", "callback_data": f"prov:delete:{p.id}"}])
+    keyboard.append([{"text": "← Назад к провайдерам", "callback_data": "nav:providers"}])
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
 async def _run_device_auth_flow(tg: Any, chat_id: int, message_id: int):
     from src.codex_runner import run_codex_device_auth
     from src.codex_accounts import (
@@ -670,15 +799,138 @@ async def handle_text_command(
         return await _render_auth_card()
     if cmd in ("/codex_key", "/codex_token"):
         return await _handle_codex_key_cmd(args, msg, tg)
+    if cmd in ("/provider", "/providers", "/api"):
+        from src.openai_providers import (
+            load_providers,
+            get_active_provider,
+            get_provider,
+            save_provider,
+            set_active_provider,
+            delete_provider,
+            fetch_provider_models,
+            normalize_base_url,
+            OpenAIProvider,
+            PROVIDER_PRESETS,
+        )
+        sub_parts = args.strip().split()
+        sub = sub_parts[0].lower() if sub_parts else ""
+
+        if sub == "add":
+            if tg and getattr(msg, "message_id", None):
+                try:
+                    asyncio.create_task(tg.delete_message(msg.chat_id, msg.message_id))
+                except Exception:
+                    pass
+
+            rem_args = sub_parts[1:]
+            if not rem_args:
+                return _render_add_provider_help()
+
+            prov_id = rem_args[0].lower()
+            if prov_id in PROVIDER_PRESETS and len(rem_args) == 2:
+                preset = PROVIDER_PRESETS[prov_id]
+                new_p = OpenAIProvider(
+                    id=prov_id,
+                    name=preset["name"],
+                    base_url=preset["base_url"],
+                    api_key=rem_args[1],
+                    default_model=preset.get("default_model", ""),
+                )
+            elif len(rem_args) >= 3:
+                base_u = normalize_base_url(rem_args[1])
+                key = rem_args[2]
+                def_m = rem_args[3] if len(rem_args) > 3 else ""
+                name = PROVIDER_PRESETS.get(prov_id, {}).get("name", prov_id.capitalize())
+                new_p = OpenAIProvider(
+                    id=prov_id,
+                    name=name,
+                    base_url=base_u,
+                    api_key=key,
+                    default_model=def_m,
+                )
+            else:
+                return BridgeReply(
+                    "⚠️ <b>Формат команды:</b>\n"
+                    "<code>/provider add &lt;id&gt; &lt;base_url&gt; &lt;api_key&gt; [модель]</code>\n\n"
+                    "Или по пресету:\n"
+                    "<code>/provider add ceapai &lt;api_key&gt;</code>",
+                    keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
+                )
+
+            saved = save_provider(new_p, make_active=True)
+            asyncio.create_task(fetch_provider_models(saved))
+
+            return BridgeReply(
+                f"✅ <b>Провайдер {html.escape(saved.name)} успешно сохранен и активирован!</b>\n\n"
+                f"🌐 <b>Base URL:</b> <code>{html.escape(saved.base_url)}</code>\n"
+                f"🔑 <b>API Key:</b> <code>{html.escape(saved.masked_key)}</code>\n"
+                f"🤖 <b>Модель:</b> <code>{html.escape(saved.default_model or 'авто')}</code>\n\n"
+                f"<i>(Сообщение с ключом удалено из чата для безопасности)</i>",
+                keyboard=[
+                    [{"text": "🌐 Все провайдеры", "callback_data": "nav:providers"}],
+                    [{"text": "🤖 Модели", "callback_data": "prov:models"}],
+                    [{"text": "⚙️ Настройки", "callback_data": "nav:settings"}],
+                ],
+            )
+
+        elif sub in ("switch", "set", "use"):
+            if len(sub_parts) < 2:
+                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider set ceapai</code>")
+            target_id = sub_parts[1].lower()
+            if set_active_provider(target_id):
+                p = get_active_provider()
+                return BridgeReply(
+                    f"⚡️ Активный провайдер переключен на <b>{html.escape(p.name if p else target_id)}</b>",
+                    keyboard=[[{"text": "🌐 К провайдерам", "callback_data": "nav:providers"}]],
+                )
+            return BridgeReply(f"⚠️ Провайдер с ID <code>{html.escape(target_id)}</code> не найден.")
+
+        elif sub in ("del", "delete", "remove"):
+            if len(sub_parts) < 2:
+                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider del ceapai</code>")
+            target_id = sub_parts[1].lower()
+            if delete_provider(target_id):
+                return BridgeReply(
+                    f"🗑 Провайдер <code>{html.escape(target_id)}</code> удален.",
+                    keyboard=[[{"text": "🌐 К провайдерам", "callback_data": "nav:providers"}]],
+                )
+            return BridgeReply(f"⚠️ Провайдер с ID <code>{html.escape(target_id)}</code> не найден.")
+
+        elif sub in ("models", "list_models"):
+            p = get_active_provider()
+            if not p:
+                return BridgeReply("⚠️ Нет активного провайдера.")
+            models = await fetch_provider_models(p)
+            if not models and p.models:
+                models = p.models
+            if not models:
+                return BridgeReply(
+                    f"⚠️ Не удалось обнаружить модели у <b>{html.escape(p.name)}</b> "
+                    f"через <code>{html.escape(p.base_url)}/models</code>. "
+                    f"Текущая модель: <code>{html.escape(p.default_model or 'default')}</code>."
+                )
+            lines = [f"🤖 <b>Доступные модели {html.escape(p.name)} ({len(models)}):</b>"]
+            for m in models[:25]:
+                marker = "● " if m == p.default_model else "• "
+                lines.append(f"{marker}<code>{html.escape(m)}</code>")
+            if len(models) > 25:
+                lines.append(f"<i>...и еще {len(models) - 25} моделей</i>")
+            return BridgeReply("\n".join(lines), keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]])
+
+        return await _render_providers_card()
+
     if cmd == "/engine":
         if args:
             clean_eng = args.strip().lower()
-            if clean_eng in ("agy", "codex"):
-                cs.engine = clean_eng
-                return BridgeReply(f"⚡️ Движок переключен на <b>{clean_eng.upper()}</b>")
-            return BridgeReply("⚠️ Доступные движки: agy, codex")
+            if clean_eng in ("agy", "codex", "openai", "openai_compat"):
+                cs.engine = "openai" if clean_eng == "openai_compat" else clean_eng
+                return BridgeReply(f"⚡️ Движок переключен на <b>{cs.engine.upper()}</b>")
+            return BridgeReply("⚠️ Доступные движки: agy, codex, openai")
         cur_eng = getattr(cs, "engine", "") or get_engine_for_model(cs.model or cfg.agy.model)
-        return BridgeReply(f"⚡️ Текущий движок: <b>{cur_eng.upper()}</b>\nИспользуйте: /engine agy | /engine codex")
+        return BridgeReply(
+            f"⚡️ Текущий движок: <b>{cur_eng.upper()}</b>\n"
+            "Используйте: /engine agy | /engine codex | /engine openai"
+        )
     if cmd == "/effort":
         if args:
             cs.effort = args
@@ -955,6 +1207,75 @@ async def handle_callback(
     if data == "nav:limits":
         qs = await fetch_quota_summary()
         return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard(), toast="Лимиты обновлены")
+    if data == "nav:providers":
+        return await _render_providers_card()
+    if data == "prov:add":
+        return _render_add_provider_help()
+    if data.startswith("prov:preset:"):
+        preset_name = data.partition("prov:preset:")[2]
+        from src.openai_providers import PROVIDER_PRESETS
+        pre = PROVIDER_PRESETS.get(preset_name, {})
+        p_name = pre.get("name", preset_name.capitalize())
+        b_url = pre.get("base_url", "")
+        d_model = pre.get("default_model", "")
+        return BridgeReply(
+            f"⚡️ <b>Быстрое подключение {html.escape(p_name)}</b>\n\n"
+            f"Отправьте команду в чат:\n"
+            f"<code>/provider add {preset_name} sk-...</code>\n\n"
+            f"<i>(Base URL <code>{b_url}</code> и модель <code>{d_model}</code> подставятся автоматически. "
+            f"Сообщение с секретным ключом сразу удалится ботом из чата)</i>",
+            keyboard=[
+                [{"text": "➕ Другой провайдер", "callback_data": "prov:add"}],
+                [{"text": "← К провайдерам", "callback_data": "nav:providers"}],
+            ],
+            toast=f"Пресет {p_name}",
+        )
+    if data.startswith("prov:switch:"):
+        target_id = data.partition("prov:switch:")[2]
+        from src.openai_providers import set_active_provider
+        set_active_provider(target_id)
+        rep = await _render_providers_card()
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Провайдер переключен")
+    if data == "prov:del_menu":
+        from src.openai_providers import load_providers
+        return _render_delete_providers_menu(load_providers())
+    if data.startswith("prov:delete:"):
+        target_id = data.partition("prov:delete:")[2]
+        from src.openai_providers import delete_provider
+        delete_provider(target_id)
+        rep = await _render_providers_card()
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Провайдер удален")
+    if data == "prov:test":
+        from src.openai_providers import get_active_provider, fetch_provider_models
+        p = get_active_provider()
+        if not p:
+            return BridgeReply("⚠️ Нет активного провайдера", toast="Нет провайдера")
+        models = await fetch_provider_models(p)
+        toast = f"✅ Успешно! Моделей: {len(models)}" if models else "⚠️ Ошибка подключения к API"
+        rep = await _render_providers_card()
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+    if data == "prov:models":
+        from src.openai_providers import get_active_provider, fetch_provider_models
+        p = get_active_provider()
+        if not p:
+            return BridgeReply("⚠️ Нет активного провайдера", toast="Нет провайдера")
+        models = await fetch_provider_models(p)
+        if not models and p.models:
+            models = p.models
+        if not models:
+            return BridgeReply(
+                f"⚠️ Не удалось обнаружить модели через <code>{html.escape(p.base_url)}/models</code>.\n"
+                f"Текущая модель: <code>{html.escape(p.default_model or 'default')}</code>",
+                keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
+                toast="Модели не найдены",
+            )
+        lines = [f"🤖 <b>Выберите модель {html.escape(p.name)}:</b>"]
+        rows: InlineKeyboard = []
+        for m in models[:12]:
+            marker = "● " if m == cs.model else "○ "
+            rows.append([{"text": f"{marker}{m}", "callback_data": f"m:{m}"}])
+        rows.append([{"text": "← К провайдерам", "callback_data": "nav:providers"}])
+        return BridgeReply(text="\n".join(lines), keyboard=rows)
     if data == "nav:model":
         return _render_model_picker(cs, cfg)
     if data == "nav:mode":
@@ -1003,16 +1324,6 @@ async def handle_callback(
             cs.model = choice
             cs.engine = get_engine_for_model(choice)
             toast = f"Модель: {choice} ({cs.engine.upper()})"
-        else:
-            toast = "Неизвестный выбор"
-        rep = _render_settings(cs, cfg)
-        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
-        if choice == _DEFAULT_TOKEN:
-            cs.model = ""
-            toast = "Настройки по умолчанию"
-        elif is_valid_model(choice):
-            cs.model = choice
-            toast = f"Модель: {choice}"
         else:
             toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)

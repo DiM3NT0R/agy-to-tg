@@ -134,11 +134,42 @@ def get_available_codex_models(force_refresh: bool = False) -> list[tuple[str, s
     return list(FALLBACK_CODEX_MODELS)
 
 
+def get_available_openai_models() -> list[tuple[str, str]]:
+    """Return models from the active OpenAI-compatible provider."""
+    try:
+        from src.openai_providers import get_active_provider
+        prov = get_active_provider()
+        if not prov:
+            return []
+        res = []
+        if prov.default_model:
+            res.append((prov.default_model, f"{prov.default_model} ({prov.name})"))
+        for m in prov.models:
+            if m != prov.default_model:
+                res.append((m, f"{m} ({prov.name})"))
+        return res
+    except Exception:
+        return []
+
+
 def get_engine_for_model(model: str) -> str:
-    """Return 'codex' or 'agy' depending on the model name."""
+    """Return 'codex', 'openai', or 'agy' depending on the model name."""
     if not model:
         return "agy"
     m = model.lower()
+    if m.startswith(("openai/", "ceapai/", "openrouter/", "deepseek/")):
+        return "openai"
+    try:
+        from src.openai_providers import get_active_provider
+        prov = get_active_provider()
+        if prov:
+            if prov.default_model and m == prov.default_model.lower():
+                return "openai"
+            if any(m == pm.lower() for pm in prov.models):
+                return "openai"
+    except Exception:
+        pass
+
     if m.startswith(("gpt-", "codex-", "o1", "o3", "o4")):
         if "gpt-oss" in m:
             return "agy"

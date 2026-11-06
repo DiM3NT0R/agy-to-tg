@@ -504,6 +504,113 @@ async def execute_codex(
     return clean_text, result.exit_code
 
 
+async def execute_openai_compat(
+    tg: "_TelegramLike",
+    chat_id: int,
+    prompt: str,
+    msg: "InboundMessage",
+    cs: "ChatState",
+    cfg: "Config",
+) -> tuple[str, int]:
+    from src.openai_providers import get_active_provider
+    from src.openai_compat_runner import run_openai_compat
+
+    provider = get_active_provider()
+    if not provider:
+        return (
+            "⚠️ Не настроен ни один OpenAI-совместимый API провайдер.\n"
+            "Добавьте провайдер командой:\n"
+            "<code>/provider add ceapai https://api.ceapai.io/v1 sk-...</code>\n"
+            "или через меню <b>/settings ➔ 🌐 API Провайдеры</b>.",
+            1,
+        )
+
+    run_nonce = f"{chat_id}:{msg.message_id}:{getattr(msg, 'user_id', 0)}:{time.monotonic()}"
+    status_msg_id: int | None = None
+    updater: StatusUpdater | None = None
+    if getattr(cfg.telegram, "live_status", False):
+        try:
+            status_msg_id = await tg.send_message(
+                chat_id,
+                f"⏳ <i>Запрос к {html.escape(provider.name)}...</i>",
+                message_thread_id=msg.message_thread_id,
+            )
+            if status_msg_id:
+                updater = StatusUpdater(tg, chat_id, status_msg_id)
+        except Exception:
+            pass
+
+    async def handle_thought(thought_text: str):
+        if updater and thought_text:
+            first_line = thought_text.strip().split("\n")[0][:60]
+            await updater.update_thought(f"💭 {first_line}...")
+
+    async def handle_tool(tool_text: str):
+        if updater and tool_text:
+            await updater.update_tool(tool_text)
+
+    hb_stop = asyncio.Event()
+    hb_task = asyncio.create_task(_heartbeat(tg, chat_id, msg.message_thread_id, hb_stop))
+    stop_event = asyncio.Event()
+    key = session_key(chat_id, msg.message_thread_id)
+    active_run = ActiveRun(stop_event, run_nonce, getattr(msg, "user_id", 0), status_msg_id)
+    ACTIVE_STOPS[key] = active_run
+    turn_start = time.perf_counter()
+
+    try:
+        timeout_s = parse_timeout_seconds(cs.print_timeout, default=AGY_TIMEOUT_S)
+        result = await run_openai_compat(
+            prompt,
+            chat_dir=cs.chat_dir,
+            provider=provider,
+            model=cs.model or provider.default_model,
+            timeout=timeout_s,
+            on_thought=handle_thought,
+            on_tool=handle_tool,
+            stop_event=stop_event,
+        )
+    finally:
+        if ACTIVE_STOPS.get(key) is active_run:
+            ACTIVE_STOPS.pop(key, None)
+        hb_stop.set()
+        hb_task.cancel()
+        if updater:
+            await updater.close()
+            try:
+                await tg.delete_message(chat_id, status_msg_id)
+            except Exception:
+                pass
+        try:
+            await hb_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    elapsed = int((time.perf_counter() - turn_start) * 1000)
+    LOG.info(
+        "openai_compat turn chat=%d cwd=%s exit=%d ms=%d in_tok=%d out_tok=%d reasoning_tok=%d",
+        chat_id, cs.chat_dir, result.exit_code, elapsed,
+        result.input_tokens, result.output_tokens, result.reasoning_tokens,
+    )
+
+    clean_text = clean_system_messages(result.text or "")
+    if result.exit_code == 0:
+        thinking_mode = getattr(cs, "thinking", "live")
+        if thinking_mode == "all" and result.thoughts:
+            bullets = "\n".join(f"• {th.strip()}" for th in result.thoughts)
+            clean_text = f"<blockquote expandable>💭 <b>Ход размышлений:</b>\n{bullets}</blockquote>\n\n{clean_text}"
+
+        clean_text += (
+            f"\n\n🌐 <i>[{provider.name}: in={result.input_tokens}, "
+            f"out={result.output_tokens}"
+            + (f", reasoning={result.reasoning_tokens}" if result.reasoning_tokens > 0 else "")
+            + "]</i>"
+        )
+    elif not clean_text and result.stderr:
+        clean_text = f"⚠️ Ошибка вызова {html.escape(provider.name)}: {html.escape(result.stderr)}"
+
+    return clean_text, result.exit_code
+
+
 async def execute_turn(
     tg: "_TelegramLike",
     chat_id: int,
@@ -514,20 +621,22 @@ async def execute_turn(
     agy_path: str = "agy",
     codex_path: str = "/usr/local/bin/codex",
 ) -> tuple[str, int]:
-    """Execute a turn with the appropriate engine (agy or codex), applying token handoff."""
+    """Execute a turn with the appropriate engine (agy, codex, or openai), applying token handoff."""
     from src.models import get_engine_for_model
     from src.context_compactor import prepare_turn_prompt
 
     effective_model = cs.model or cfg.agy.model
     target_engine = get_engine_for_model(effective_model)
-    if cs.engine and cs.engine in ("agy", "codex"):
+    if cs.engine and cs.engine in ("agy", "codex", "openai", "openai_compat"):
         target_engine = cs.engine
 
     # Apply token handoff if switching engines
     prompt_for_engine = prepare_turn_prompt(prompt, cs, target_engine)
     cs.engine = target_engine
 
-    if target_engine == "codex":
+    if target_engine in ("openai", "openai_compat"):
+        return await execute_openai_compat(tg, chat_id, prompt_for_engine, msg, cs, cfg)
+    elif target_engine == "codex":
         return await execute_codex(tg, chat_id, prompt_for_engine, msg, cs, cfg, codex_path)
     else:
         return await _execute_agy_internal(tg, chat_id, prompt_for_engine, msg, cs, cfg, agy_path)

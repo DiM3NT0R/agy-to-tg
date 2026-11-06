@@ -22,7 +22,7 @@ SessionKey = int | tuple[int, int]
 # Per-chat overrides have to be argv-safe. The regex rejects any character
 # that's not strictly needed for valid model identifiers (e.g. "gemini-3.5-flash").
 # Crucially it forbids a leading `-` so a tampered state file can't inject flags.
-_MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-]*$")
+_MODEL_RE = re.compile(r"^[a-zA-Z0-9._][a-zA-Z0-9._\-/:+]*$")
 
 _ALLOWED_MODES = frozenset({"", "code", "plan"})
 
