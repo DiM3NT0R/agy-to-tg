@@ -96,6 +96,10 @@ def _build_args(
         args.extend(["--model", model])
     if effort:
         args.extend(["--effort", effort])
+    if mode == "plan":
+        args.extend(["--mode", "plan"])
+    elif mode == "code":
+        args.extend(["--mode", "accept-edits"])
     args.append("--dangerously-skip-permissions")
     args.extend(["--print-timeout", print_timeout])
     return args
