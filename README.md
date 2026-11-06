@@ -47,7 +47,7 @@ Unlike conventional API wrappers that charge per-token, this bridge enables usin
 #### Installation
 ```bash
 # Clone the repository
-git clone https://github.com/DiM3NT0R/agy-to-tg.git ~/.gemini/extensions/antigravity-telegram-bridge
+git clone https://github.com/DiM3NT0R/agent-tg-bridge.git ~/.gemini/extensions/antigravity-telegram-bridge
 cd ~/.gemini/extensions/antigravity-telegram-bridge
 
 # Run installation script (sets up virtualenv & dependencies)
@@ -123,7 +123,7 @@ systemctl --user enable --now antigravity-telegram-bridge.service
 
 #### Развёртывание
 ```bash
-git clone https://github.com/DiM3NT0R/agy-to-tg.git ~/.gemini/extensions/antigravity-telegram-bridge
+git clone https://github.com/DiM3NT0R/agent-tg-bridge.git ~/.gemini/extensions/antigravity-telegram-bridge
 cd ~/.gemini/extensions/antigravity-telegram-bridge
 ./install.sh
 

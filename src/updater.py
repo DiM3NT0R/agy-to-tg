@@ -15,7 +15,7 @@ DEFAULT_CHECK_INTERVAL_S = 120.0  # Check every 2 minutes
 
 
 def detect_git_remote(repo_dir: Path = REPO_DIR) -> str:
-    """Prefer 'dim3nt0r' remote if present and pointing to agy-to-tg, else 'origin'."""
+    """Prefer 'dim3nt0r' remote if present and pointing to agent-tg-bridge, else 'origin'."""
     try:
         res = subprocess.run(
             ["git", "remote"],
