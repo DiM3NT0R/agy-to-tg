@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.agy_runner import clean_system_messages, run_agy
+from src.questions import build_options_keyboard, extract_question_options
 
 if TYPE_CHECKING:
     from src.config import Config
@@ -166,11 +167,17 @@ class StatusUpdater:
     async def _edit(self, text: str = ""):
         try:
             display_text = self._build_display_text()
+            kb: list[list[dict[str, str]]] = []
+            if self.current_thought:
+                opts = extract_question_options(self.current_thought)
+                if opts:
+                    kb.extend(build_options_keyboard(opts, prefix="opt_live"))
+            kb.append([{"text": "🛑 Остановить", "callback_data": f"stop_turn:{self.run_nonce}"}])
             await self.tg.edit_message_text(
                 self.chat_id, 
                 self.message_id, 
                 display_text,
-                keyboard=[[{"text": "🛑 Остановить", "callback_data": f"stop_turn:{self.run_nonce}"}]]
+                keyboard=kb,
             )
         except Exception:
             pass

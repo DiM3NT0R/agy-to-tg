@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import secrets
@@ -18,6 +19,12 @@ from src.config import Config, load_config
 from src.health import memory_healthy, record_error, record_turn, start_server
 from src.media import build_media_prompt, clean_inbox
 from src.okf_memory import attach_memory
+from src.questions import (
+    build_options_keyboard,
+    extract_question_options,
+    get_question_options,
+    store_question_options,
+)
 from src.queue import TurnQueue
 from src.state import ChatState, SessionKey, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
@@ -203,7 +210,12 @@ async def _do_turn(
         pass
     try:
         if code == 0:
-            reply_kb = [[{"text": "🔊 Озвучить", "callback_data": "tts"}]] if reply else None
+            opts = extract_question_options(reply)
+            reply_kb = []
+            if opts:
+                reply_kb.extend(build_options_keyboard(opts, prefix="opt"))
+            if reply:
+                reply_kb.append([{"text": "🔊 Озвучить", "callback_data": "tts"}])
         elif "исчерпана квота" in reply.lower() or "quota" in reply.lower():
             reply_kb = [
                 [{"text": "⚡ Перейти на Gemini Flash", "callback_data": "m:gemini-3.8-flash-high"}],
@@ -364,6 +376,7 @@ async def _process_text(
 async def _process_callback(
     cq: CallbackQuery, tg: _TelegramLike, state: State,
     state_path: Path, chats_root: Path, cfg: Config, info: DaemonInfo,
+    agy_path: str = "agy",
 ) -> None:
     if not is_authorized(
         InboundMessage(update_id=cq.update_id, chat_id=cq.chat_id,
@@ -375,6 +388,87 @@ async def _process_callback(
         return
 
     cs = _ensure_chat_state(state, cq.chat_id, cq.message_thread_id, chats_root)
+
+    if cq.data.startswith("opt:") or cq.data.startswith("opt_live:"):
+        parts = cq.data.split(":")
+        if len(parts) >= 3:
+            prefix, cache_id, opt_idx_str = parts[0], parts[1], parts[2]
+            try:
+                opt_idx = int(opt_idx_str)
+            except ValueError:
+                opt_idx = -1
+            options = get_question_options(cache_id)
+            if options and 0 <= opt_idx < len(options):
+                chosen_opt = options[opt_idx]
+                is_live = (prefix == "opt_live")
+                if is_live:
+                    try:
+                        await tg.answer_callback_query(cq.callback_query_id, text=f"✅ Ответ отправлен: {chosen_opt}")
+                    except Exception:
+                        pass
+                    try:
+                        await tg.send_message(
+                            cq.chat_id,
+                            f"👉 <b>{html.escape(chosen_opt)}</b>",
+                            message_thread_id=cq.message_thread_id,
+                        )
+                    except Exception:
+                        pass
+                    if getattr(cs, "engine", "") == "codex" and getattr(cs, "codex_thread_id", ""):
+                        from src.codex_runner import queue_codex_message
+                        await queue_codex_message(cs.codex_thread_id, chosen_opt)
+                    else:
+                        inbound = InboundMessage(
+                            update_id=cq.update_id,
+                            chat_id=cq.chat_id,
+                            user_id=cq.user_id,
+                            message_id=cq.message_id,
+                            text=chosen_opt,
+                            message_thread_id=cq.message_thread_id,
+                        )
+                        await _QUEUE.submit(inbound)
+                    return
+                else:
+                    try:
+                        await tg.answer_callback_query(cq.callback_query_id, text=f"✅ Выбрано: {chosen_opt}")
+                    except Exception:
+                        pass
+                    raw_cached = get_cached_reply_text(cq.chat_id, cq.message_id) or cq.message_text or ""
+                    try:
+                        await tg.edit_message_text(
+                            cq.chat_id,
+                            cq.message_id,
+                            raw_cached,
+                            keyboard=[[{"text": f"✅ Выбрано: {chosen_opt}", "callback_data": "noop"}]],
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await tg.send_message(
+                            cq.chat_id,
+                            f"👉 <b>{html.escape(chosen_opt)}</b>",
+                            message_thread_id=cq.message_thread_id,
+                        )
+                    except Exception:
+                        pass
+                    inbound = InboundMessage(
+                        update_id=cq.update_id,
+                        chat_id=cq.chat_id,
+                        user_id=cq.user_id,
+                        message_id=cq.message_id,
+                        text=chosen_opt,
+                        message_thread_id=cq.message_thread_id,
+                    )
+                    asyncio.create_task(
+                        _process_text(inbound, tg, state, state_path, chats_root, cfg, agy_path, info)
+                    )
+                    return
+            else:
+                try:
+                    await tg.answer_callback_query(cq.callback_query_id, text="⚠️ Вариант устарел")
+                except Exception:
+                    pass
+                return
 
     if cq.data == "tts" or cq.data.startswith("tts:"):
         raw_text = get_cached_reply_text(cq.chat_id, cq.message_id) or cq.message_text
@@ -561,7 +655,7 @@ async def run(
                 if cq is not None:
                     async def safe_process_callback(cq, tg, state, state_path, chats_root, cfg, info):
                         try:
-                            await _process_callback(cq, tg, state, state_path, chats_root, cfg, info)
+                            await _process_callback(cq, tg, state, state_path, chats_root, cfg, info, agy_path=agy_path)
                         except Exception as e:
                             import traceback
                             LOG.error("Error in _process_callback: %s\n%s", e, traceback.format_exc())

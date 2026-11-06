@@ -483,3 +483,23 @@ async def run_codex_device_auth(
         wait_proc.cancel()
         if cancel_task:
             cancel_task.cancel()
+
+
+async def queue_codex_message(
+    thread_id: str,
+    message: str,
+    codex_path: str = "/usr/local/bin/codex",
+) -> tuple[bool, str]:
+    """Queue a message to an active or existing codex thread."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            codex_path, "queue", "--thread", thread_id, "--message", message,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return True, stdout.decode().strip()
+        return False, stderr.decode().strip()
+    except Exception as e:
+        return False, str(e)
