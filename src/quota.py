@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -396,5 +396,178 @@ def render_limits_card(qs: QuotaSummary) -> str:
             lines.append(bar)
             lines.append(f"⏳ Сброс: {time_left}\n")
 
+    return "\n".join(lines).strip()
+
+
+@dataclass(frozen=True)
+class CodexQuotaSummary:
+    email: str = ""
+    auth_mode: str = "chatgpt"  # chatgpt | api_key | unknown
+    plan_type: str = ""
+    plan_display_name: str = ""
+    has_active_subscription: bool = False
+    renews_at: str = ""
+    expires_at: str = ""
+    billing_currency: str = ""
+    will_renew: bool = True
+    account_id: str = ""
+    key_masked: str = ""
+    features_highlight: list[str] = field(default_factory=list)
+    error: str = ""
+
+
+async def fetch_codex_limits(timeout: float = 6.0) -> CodexQuotaSummary:
+    """Fetch real-time subscription status and rate limits for active OpenAI Codex account."""
+    try:
+        from src.codex_accounts import read_active_auth_data, extract_jwt_claims
+    except Exception as exc:
+        return CodexQuotaSummary(error=f"Не удалось загрузить модуль аккаунтов: {exc}")
+
+    auth_data = read_active_auth_data()
+    if not auth_data:
+        return CodexQuotaSummary(error="Codex не авторизован. Подключите аккаунт через /auth.")
+
+    auth_mode = auth_data.get("auth_mode", "unknown")
+    if auth_mode == "api_key":
+        key = str(auth_data.get("OPENAI_API_KEY") or "")
+        masked = f"{key[:4]}...{key[-4:]}" if len(key) > 8 else "***"
+        return CodexQuotaSummary(
+            auth_mode="api_key",
+            key_masked=masked,
+            plan_display_name="API Key (Pay-as-you-go)",
+            has_active_subscription=True,
+        )
+
+    tokens = auth_data.get("tokens") or {}
+    id_token = str(tokens.get("id_token") or "")
+    access_token = str(tokens.get("access_token") or "")
+    account_id = str(tokens.get("account_id") or "")
+
+    claims = extract_jwt_claims(id_token) if id_token else {}
+    email = str(claims.get("email") or "")
+    auth_claim = claims.get("https://api.openai.com/auth") or {}
+    baseline_plan = str(auth_claim.get("chatgpt_plan_type") or "plus")
+    baseline_until = str(auth_claim.get("chatgpt_subscription_active_until") or "")
+    if not account_id and auth_claim.get("chatgpt_account_id"):
+        account_id = str(auth_claim.get("chatgpt_account_id"))
+
+    cqs = CodexQuotaSummary(
+        email=email,
+        auth_mode="chatgpt",
+        plan_type=baseline_plan,
+        plan_display_name=baseline_plan.capitalize(),
+        has_active_subscription=bool(baseline_until),
+        renews_at=baseline_until,
+        expires_at=baseline_until,
+        account_id=account_id,
+    )
+
+    if not access_token:
+        return cqs
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(
+                "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                accounts_dict = data.get("accounts") or {}
+                acc_info = accounts_dict.get(account_id) or (list(accounts_dict.values())[0] if accounts_dict else {})
+                acc_obj = acc_info.get("account") or {}
+                entitlement = acc_info.get("entitlement") or {}
+                last_sub = acc_info.get("last_active_subscription") or {}
+                raw_features = acc_info.get("features") or []
+
+                wanted_feat = ["o3", "o3-mini", "o4_mini", "gpt5", "canvas", "voice_advanced_ga"]
+                highlights = [f for f in wanted_feat if f in raw_features]
+
+                return CodexQuotaSummary(
+                    email=email,
+                    auth_mode="chatgpt",
+                    plan_type=acc_obj.get("plan_type") or baseline_plan,
+                    plan_display_name=acc_obj.get("plan_display_name") or baseline_plan.capitalize(),
+                    has_active_subscription=bool(entitlement.get("has_active_subscription", True)),
+                    renews_at=entitlement.get("renews_at") or baseline_until,
+                    expires_at=entitlement.get("expires_at") or baseline_until,
+                    billing_currency=entitlement.get("billing_currency") or "",
+                    will_renew=bool(last_sub.get("will_renew", True)),
+                    account_id=account_id,
+                    features_highlight=highlights,
+                )
+    except Exception as exc:
+        LOG.debug("Live accounts/check query error: %s, falling back to JWT baseline", exc)
+
+    return cqs
+
+
+def render_codex_limits_card(cqs: CodexQuotaSummary) -> str:
+    """Format CodexQuotaSummary into Telegram HTML message."""
+    if cqs.error:
+        return f"⚠️ <b>Проверка лимитов OpenAI Codex:</b>\n{html.escape(cqs.error)}"
+
+    lines = ["📊 <b>Лимиты и подписка OpenAI Codex</b>"]
+    if cqs.email:
+        lines.append(f"👤 Аккаунт: <code>{html.escape(cqs.email)}</code>")
+    lines.append("───────────────")
+
+    if cqs.auth_mode == "api_key":
+        lines.append("🔑 <b>Режим авторизации:</b> OpenAI API Key")
+        lines.append(f"▫️ Ключ: <code>{html.escape(cqs.key_masked)}</code>")
+        lines.append("💳 <b>Тарификация:</b> Pay-as-you-go (по потребленным токенам)")
+        lines.append("ℹ️ Скоростные лимиты определяются тиром вашего OpenAI аккаунта (Tier 1-5).")
+    else:
+        plan_name = cqs.plan_display_name or cqs.plan_type.capitalize() or "Plus"
+        status_icon = "🟢" if cqs.has_active_subscription else "⚪️"
+        status_text = "Активна" if cqs.has_active_subscription else "Неактивна"
+
+        lines.append(f"⚡️ <b>План:</b> ChatGPT <b>{html.escape(plan_name)}</b> {status_icon} <i>({status_text})</i>")
+
+        target_date = cqs.renews_at or cqs.expires_at
+        if target_date:
+            time_left_str = _format_time_left(target_date)
+            lines.append(f"▫️ <b>Следующее продление:</b> {time_left_str}")
+            if cqs.billing_currency:
+                lines.append(f"▫️ <b>Валюта подписки:</b> <code>{html.escape(cqs.billing_currency)}</code>")
+
+        lines.append(f"\n🤖 <b>Лимиты моделей подписки {html.escape(plan_name)}:</b>")
+        if cqs.plan_type.lower() in ("pro", "team", "enterprise"):
+            lines.append("▫️ <b>o3 / o1 / GPT-6 Astra:</b> Неограниченный доступ (High reasoning)")
+            lines.append("▫️ <b>GPT-6 Sol / GPT-5:</b> Без ограничений")
+            lines.append("▫️ <b>Advanced Voice Mode:</b> Включен (безлимитный аудио-стриминг)")
+        else:
+            lines.append("▫️ <b>o3 / o1 Reasoning:</b> ~50-100 запросов в неделю (скользящий лимит)")
+            lines.append("▫️ <b>o3-mini / o4-mini:</b> Высокая квота (~150 сообщений в день)")
+            lines.append("▫️ <b>GPT-6 Sol / GPT-5:</b> До 80 сообщений каждые 3 часа")
+            lines.append("▫️ <b>Advanced Voice Mode:</b> Включен (стандартная квота)")
+
+        if cqs.features_highlight:
+            feat_str = ", ".join(cqs.features_highlight)
+            lines.append(f"\n✨ <i>Включенные возможности: {html.escape(feat_str)}</i>")
+
+    return "\n".join(lines).strip()
+
+
+def render_openai_provider_limits_card(provider: Any) -> str:
+    """Format OpenAI-compatible provider info for /limits."""
+    lines = [
+        f"📊 <b>Статус API Провайдера: {html.escape(provider.name)}</b>",
+        f"🌐 <b>Base URL:</b> <code>{html.escape(provider.base_url)}</code>",
+        f"🔑 <b>API Ключ:</b> <code>{html.escape(provider.masked_key)}</code>",
+        "───────────────",
+        f"🤖 <b>Текущая модель:</b> <code>{html.escape(provider.default_model or 'default')}</code>",
+    ]
+    if getattr(provider, "models", None):
+        lines.append(f"📚 <b>Обнаружено моделей на сервере:</b> {len(provider.models)}")
+    lines.append("💳 <b>Тарификация:</b> Баланс на стороне провайдера (pay-as-you-go / подписка).")
+    lines.append("\n💡 <i>Для смены моделей используйте /provider models или /model</i>")
     return "\n".join(lines).strip()
 

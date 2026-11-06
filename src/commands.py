@@ -18,7 +18,13 @@ from src.models import (
     get_available_openai_models,
     get_engine_for_model,
 )
-from src.quota import fetch_quota_summary, render_limits_card
+from src.quota import (
+    fetch_quota_summary,
+    render_limits_card,
+    fetch_codex_limits,
+    render_codex_limits_card,
+    render_openai_provider_limits_card,
+)
 from src.state import is_valid_model
 from src.telegram import InlineKeyboard
 
@@ -141,12 +147,26 @@ def render_status(cs: "ChatState", cfg: "Config") -> str:
     return "\n".join(lines)
 
 
-def _limits_keyboard() -> InlineKeyboard:
+def _limits_keyboard(current_tab: str = "agy") -> InlineKeyboard:
+    from src.openai_providers import get_active_provider
+    has_prov = bool(get_active_provider())
+
+    tabs: list[dict[str, Any]] = [
+        {"text": ("● " if current_tab == "agy" else "○ ") + "🌐 Antigravity", "callback_data": "limits:agy"},
+        {"text": ("● " if current_tab == "codex" else "○ ") + "⚡️ Codex", "callback_data": "limits:codex"},
+    ]
+    if has_prov:
+        tabs.append({"text": ("● " if current_tab == "openai" else "○ ") + "🌐 API", "callback_data": "limits:openai"})
+
     return [
+        tabs,
         [
-            {"text": "🔄 Обновить квоту", "callback_data": "nav:limits"},
-            {"text": "⚙️ Настройки", "callback_data": "nav:settings"},
-        ]
+            {"text": "🔄 Обновить", "callback_data": f"limits:{current_tab}"},
+            {"text": "🤖 Модели", "callback_data": "nav:model"},
+        ],
+        [
+            {"text": "← Назад к настройкам", "callback_data": "nav:settings"},
+        ],
     ]
 
 
@@ -785,8 +805,33 @@ async def handle_text_command(
     if cmd == "/help":
         return BridgeReply(HELP_TEXT)
     if cmd in ("/limits", "/quota"):
-        qs = await fetch_quota_summary()
-        return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard())
+        sub = args.strip().lower()
+        active_tab = "agy"
+        if sub in ("codex", "openai_codex", "chatgpt"):
+            active_tab = "codex"
+        elif sub in ("api", "provider", "providers", "openai"):
+            active_tab = "openai"
+        elif not sub:
+            cur_eng = getattr(cs, "engine", "") or get_engine_for_model(cs.model or cfg.agy.model)
+            if cur_eng == "codex":
+                active_tab = "codex"
+            elif cur_eng in ("openai", "openai_compat"):
+                active_tab = "openai"
+            else:
+                active_tab = "agy"
+
+        if active_tab == "codex":
+            cqs = await fetch_codex_limits()
+            return BridgeReply(render_codex_limits_card(cqs), keyboard=_limits_keyboard("codex"))
+        elif active_tab == "openai":
+            from src.openai_providers import get_active_provider
+            prov = get_active_provider()
+            if prov:
+                return BridgeReply(render_openai_provider_limits_card(prov), keyboard=_limits_keyboard("openai"))
+            return BridgeReply("⚠️ Нет активного OpenAI-совместимого провайдера.", keyboard=_limits_keyboard("agy"))
+        else:
+            qs = await fetch_quota_summary()
+            return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard("agy"))
     if cmd in ("/status", "/info"):
         return BridgeReply(render_status(cs, cfg))
     if cmd == "/settings":
@@ -1204,9 +1249,24 @@ async def handle_callback(
             )
         except Exception as exc:
             return BridgeReply(f"⚠️ Ошибка чтения: {exc}", toast="Ошибка чтения")
-    if data == "nav:limits":
-        qs = await fetch_quota_summary()
-        return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard(), toast="Лимиты обновлены")
+    if data == "nav:limits" or data.startswith("limits:"):
+        tab = data.partition("limits:")[2] if data.startswith("limits:") else ""
+        if not tab:
+            cur_eng = getattr(cs, "engine", "") or get_engine_for_model(cs.model or cfg.agy.model)
+            tab = "codex" if cur_eng == "codex" else ("openai" if cur_eng in ("openai", "openai_compat") else "agy")
+
+        if tab == "codex":
+            cqs = await fetch_codex_limits()
+            return BridgeReply(render_codex_limits_card(cqs), keyboard=_limits_keyboard("codex"), toast="Лимиты Codex обновлены")
+        elif tab == "openai":
+            from src.openai_providers import get_active_provider
+            prov = get_active_provider()
+            if prov:
+                return BridgeReply(render_openai_provider_limits_card(prov), keyboard=_limits_keyboard("openai"), toast="Статус API обновлен")
+            return BridgeReply("⚠️ Нет активного API провайдера", keyboard=_limits_keyboard("agy"), toast="Нет провайдера")
+        else:
+            qs = await fetch_quota_summary()
+            return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard("agy"), toast="Лимиты обновлены")
     if data == "nav:providers":
         return await _render_providers_card()
     if data == "prov:add":

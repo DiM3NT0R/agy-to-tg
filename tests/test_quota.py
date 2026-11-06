@@ -268,3 +268,81 @@ async def test_fetch_from_cli_and_argon(monkeypatch) -> None:
     assert "100%" in card
     assert "73%" in card
     assert "77%" in card
+
+
+def test_render_codex_limits_card_subscription() -> None:
+    from src.quota import CodexQuotaSummary, render_codex_limits_card
+
+    cqs = CodexQuotaSummary(
+        email="test@user.com",
+        auth_mode="chatgpt",
+        plan_type="plus",
+        plan_display_name="Plus",
+        has_active_subscription=True,
+        renews_at="2026-12-04T04:02:15+00:00",
+        billing_currency="USD",
+        will_renew=True,
+        features_highlight=["o3", "gpt5", "canvas"],
+    )
+    card = render_codex_limits_card(cqs)
+    assert "Лимиты и подписка OpenAI Codex" in card
+    assert "test@user.com" in card
+    assert "Plus" in card
+    assert "Активна" in card
+    assert "USD" in card
+    assert "o3 / o1 Reasoning" in card
+    assert "canvas" in card
+
+
+def test_render_codex_limits_card_api_key() -> None:
+    from src.quota import CodexQuotaSummary, render_codex_limits_card
+
+    cqs = CodexQuotaSummary(
+        auth_mode="api_key",
+        key_masked="sk-t...1234",
+        plan_display_name="API Key (Pay-as-you-go)",
+        has_active_subscription=True,
+    )
+    card = render_codex_limits_card(cqs)
+    assert "OpenAI API Key" in card
+    assert "Pay-as-you-go" in card
+    assert "sk-t...1234" in card
+
+
+def test_render_openai_provider_limits_card() -> None:
+    from src.quota import render_openai_provider_limits_card
+    from src.openai_providers import OpenAIProvider
+
+    p = OpenAIProvider(
+        id="ceapai",
+        name="CeapAI",
+        base_url="https://api.ceapai.io/v1",
+        api_key="sk-test",
+        default_model="gpt-4o",
+        models=["gpt-4o", "claude-3-5-sonnet"],
+    )
+    card = render_openai_provider_limits_card(p)
+    assert "CeapAI" in card
+    assert "https://api.ceapai.io/v1" in card
+    assert "gpt-4o" in card
+    assert "2" in card
+
+
+@pytest.mark.asyncio
+async def test_fetch_codex_limits_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.quota import fetch_codex_limits
+
+    fake_auth = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "id_token": "a.eyJlbWFpbCI6ICJ1c2VyQGV4YW1wbGUuY29tIiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyIsICJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfdW50aWwiOiAiMjAyNi0xMi0wNFQwNDowMjoxNSswMDowMCJ9fQ==.c",
+            "access_token": "acc_tok",
+            "account_id": "acc-123",
+        },
+    }
+    monkeypatch.setattr("src.codex_accounts.read_active_auth_data", lambda: fake_auth)
+
+    cqs = await fetch_codex_limits()
+    assert cqs.email == "user@example.com"
+    assert cqs.plan_type == "plus"
+    assert cqs.has_active_subscription is True
