@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import html
 import json
 import logging
 import os
@@ -65,19 +66,23 @@ def _build_codex_args(
     chat_dir: str,
     sandbox: str = "danger-full-access",
 ) -> list[str]:
-    if thread_id:
-        args = [codex_path, "exec", "resume", thread_id, prompt]
-    else:
-        args = [codex_path, "exec", prompt]
+    args = [codex_path]
+    if sandbox:
+        args.extend(["-s", sandbox])
+    if chat_dir:
+        args.extend(["-C", chat_dir])
 
-    args.extend([
-        "--json",
-        "--skip-git-repo-check",
-        "-s", sandbox,
-        "-C", chat_dir,
-    ])
-    if model:
-        args.extend(["-m", model])
+    if thread_id:
+        args.extend(["exec", "resume", "--json", "--skip-git-repo-check"])
+        if model:
+            args.extend(["-m", model])
+        args.extend([thread_id, prompt])
+    else:
+        args.extend(["exec", "--json", "--skip-git-repo-check"])
+        if model:
+            args.extend(["-m", model])
+        args.append(prompt)
+
     return args
 
 
@@ -344,8 +349,13 @@ async def run_codex(
     stderr_out = b"".join(stderr_chunks).decode("utf-8", errors="replace")
     thoughts, final_text = _split_thoughts_and_final(message_chunks)
 
+    err_text = final_text
+    if not err_text and (process.returncode or 0) != 0 and stderr_out.strip():
+        clean_err = re.sub(r"\x1b\[[0-9;]*[mK]", "", stderr_out).strip()
+        err_text = f"⚠️ Ошибка Codex (код {process.returncode}):\n<code>{html.escape(clean_err[:1000])}</code>"
+
     return CodexResult(
-        text=final_text,
+        text=err_text,
         exit_code=process.returncode or 0,
         stderr=stderr_out,
         thread_id=observed_thread_id,

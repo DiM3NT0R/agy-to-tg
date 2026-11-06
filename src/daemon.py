@@ -184,8 +184,9 @@ async def _do_turn(
         if text:
             reply = text
         else:
+            engine_name = getattr(cs, "engine", "") or "agy"
             reply = (
-                f"⚠️ agy завершился с ошибкой (код {code}). "
+                f"⚠️ {engine_name} завершился с ошибкой (код {code}). "
                 "Если ошибка повторяется, попробуйте /reset"
             )
     else:

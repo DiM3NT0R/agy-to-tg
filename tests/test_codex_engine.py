@@ -24,16 +24,16 @@ def test_build_codex_args():
     )
     assert args == [
         "/usr/local/bin/codex",
-        "exec",
-        "Hello Codex",
-        "--json",
-        "--skip-git-repo-check",
         "-s",
         "danger-full-access",
         "-C",
         "/tmp/test",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
         "-m",
         "gpt-6.1-sol",
+        "Hello Codex",
     ]
 
     # Resumed session
@@ -46,16 +46,16 @@ def test_build_codex_args():
     )
     assert args_resume == [
         "/usr/local/bin/codex",
-        "exec",
-        "resume",
-        "01a1adbc-1234",
-        "Next turn",
-        "--json",
-        "--skip-git-repo-check",
         "-s",
         "danger-full-access",
         "-C",
         "/tmp/test",
+        "exec",
+        "resume",
+        "--json",
+        "--skip-git-repo-check",
+        "01a1adbc-1234",
+        "Next turn",
     ]
 
 

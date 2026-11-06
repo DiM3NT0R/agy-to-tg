@@ -476,6 +476,11 @@ async def execute_codex(
         result.input_tokens, result.cached_input_tokens, result.output_tokens,
         result.reasoning_output_tokens, len(result.text or ""),
     )
+    if result.exit_code != 0:
+        LOG.warning(
+            "codex turn failed chat=%d exit=%d stderr=%s",
+            chat_id, result.exit_code, (result.stderr or "").strip(),
+        )
 
     clean_text = clean_system_messages(result.text or "")
     if result.exit_code == 0:
