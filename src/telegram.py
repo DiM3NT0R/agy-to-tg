@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from src.config import TelegramConfig
+
+LOG = logging.getLogger("antigravity_telegram_bridge")
 
 
 @dataclass(frozen=True)
@@ -155,6 +158,69 @@ def chunk_message(text: str, max_len: int = 4096) -> list[str]:
     return chunks
 
 
+_ALLOWED_TAG_NAMES = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "code", "pre", "blockquote", "tg-spoiler", "a", "tg-emoji",
+}
+
+_ALLOWED_TELEGRAM_TAGS_RE = re.compile(
+    r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|tg-emoji)(?:\s+[^>]*?)?>|"
+    r"<a\s+href=[\x27\x22][^\x27\x22]*?[\x27\x22]\s*>|"
+    r"</a>",
+    re.IGNORECASE,
+)
+
+
+def balance_telegram_tags(html_text: str) -> str:
+    """Balance Telegram HTML tags, stripping stray closing tags and closing any unclosed tags."""
+    if not html_text:
+        return ""
+
+    tag_re = re.compile(r"</?\s*([a-zA-Z0-9_-]+)(?:\s+[^>]*)?>")
+    stack: list[str] = []
+    output_parts: list[str] = []
+    last_end = 0
+
+    for m in tag_re.finditer(html_text):
+        tag_str = m.group(0)
+        tag_name = m.group(1).lower()
+
+        if tag_name not in _ALLOWED_TAG_NAMES:
+            continue
+
+        output_parts.append(html_text[last_end:m.start()])
+        last_end = m.end()
+
+        is_close = tag_str.startswith("</")
+        if is_close:
+            if stack and stack[-1] == tag_name:
+                stack.pop()
+                output_parts.append(tag_str)
+            elif tag_name in stack:
+                # Close intervening open tags in reverse order
+                while stack and stack[-1] != tag_name:
+                    unwound = stack.pop()
+                    output_parts.append(f"</{unwound}>")
+                if stack and stack[-1] == tag_name:
+                    stack.pop()
+                    output_parts.append(tag_str)
+            else:
+                # Stray closing tag with no matching opening tag - omit it to prevent Telegram 400
+                pass
+        else:
+            stack.append(tag_name)
+            output_parts.append(tag_str)
+
+    output_parts.append(html_text[last_end:])
+
+    # Close any remaining unclosed tags in reverse order
+    while stack:
+        unclosed = stack.pop()
+        output_parts.append(f"</{unclosed}>")
+
+    return "".join(output_parts)
+
+
 def _format_inline_markdown(text: str) -> str:
     """Convert inline Markdown elements inside an already HTML-escaped string."""
     placeholders: list[str] = []
@@ -164,8 +230,8 @@ def _format_inline_markdown(text: str) -> str:
         placeholders.append(html_fragment)
         return f"\x00PH{idx}\x00"
 
-    # 1. Inline code inside markdown links: [`code`](url) or [label](url)
-    # First extract inline code spans `...`
+    # 1. Inline code spans are already extracted in _escape_and_format_inline.
+    # We still handle any remaining backtick spans just in case.
     def _replace_inline_code(m: re.Match[str]) -> str:
         code_body = m.group(1)
         return _stash(f"<code>{code_body}</code>")
@@ -183,8 +249,8 @@ def _format_inline_markdown(text: str) -> str:
             safe_url = html.escape(url, quote=True)
             return _stash(f'<a href="{safe_url}">{label}</a>')
         # Non-web links (e.g. file:///..., conversation://...) are rejected by Telegram <a href>.
-        # Render the label cleanly (wrapped in <code> if not already containing tags).
-        if "<code>" in label:
+        # Render the label cleanly (wrapped in <code> if not already containing tags or code).
+        if "<code>" in label or "\x00CODE" in label:
             return _stash(label)
         return _stash(f"<code>{label}</code>")
 
@@ -208,18 +274,24 @@ def _format_inline_markdown(text: str) -> str:
     return text
 
 
-_ALLOWED_TELEGRAM_TAGS_RE = re.compile(
-    r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)(?:\s+[^>]*?)?>|"
-    r"<a\s+href=[\x27\x22][^\x27\x22]*?[\x27\x22]\s*>|"
-    r"</a>",
-    re.IGNORECASE,
-)
-
-
 def _escape_and_format_inline(raw_text: str) -> str:
     """Escape text for Telegram HTML while preserving valid Telegram tags and converting Markdown."""
     if not raw_text:
         return ""
+
+    # 1. Stash inline code spans `...` first. Content inside backticks is literal code
+    # and must be escaped, never treated as HTML tags or Markdown.
+    stashed_codes: list[str] = []
+
+    def _stash_code(m: re.Match[str]) -> str:
+        idx = len(stashed_codes)
+        escaped_code = html.escape(m.group(1))
+        stashed_codes.append(f"<code>{escaped_code}</code>")
+        return f"\x00CODE{idx}\x00"
+
+    text = re.sub(r"`([^`\n]+)`", _stash_code, raw_text)
+
+    # 2. Stash allowed Telegram HTML tags in remaining text
     stashed_tags: list[str] = []
 
     def _stash_tag(m: re.Match[str]) -> str:
@@ -227,12 +299,21 @@ def _escape_and_format_inline(raw_text: str) -> str:
         stashed_tags.append(m.group(0))
         return f"\x00TAG{idx}\x00"
 
-    text_with_tag_placeholders = _ALLOWED_TELEGRAM_TAGS_RE.sub(_stash_tag, raw_text)
-    escaped_text = html.escape(text_with_tag_placeholders)
-    formatted = _format_inline_markdown(escaped_text)
+    text = _ALLOWED_TELEGRAM_TAGS_RE.sub(_stash_tag, text)
+
+    # 3. Escape HTML characters in remaining text
+    text = html.escape(text)
+
+    # 4. Format inline markdown (links, bold, italic, strikethrough)
+    text = _format_inline_markdown(text)
+
+    # 5. Restore stashed tags and codes
     for i, tag in enumerate(stashed_tags):
-        formatted = formatted.replace(f"\x00TAG{i}\x00", tag)
-    return formatted
+        text = text.replace(f"\x00TAG{i}\x00", tag)
+    for i, code in enumerate(stashed_codes):
+        text = text.replace(f"\x00CODE{i}\x00", code)
+
+    return text
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -395,7 +476,7 @@ def markdown_to_telegram_html(text: str) -> str:
     for i, block_html in enumerate(code_blocks):
         result = result.replace(f"\x00CB{i}\x00", block_html)
 
-    return result
+    return balance_telegram_tags(result)
 
 
 import httpx
@@ -493,6 +574,11 @@ class TelegramClient:
             if not data.get("ok"):
                 desc = str(data.get("description", "")).lower()
                 if "can't parse entities" in desc or "parse entities" in desc or "find end of the entity" in desc:
+                    LOG.warning(
+                        "Telegram sendMessage HTML parse failed: %s; falling back to plain text for chunk: %.200r",
+                        data.get("description"),
+                        chunk,
+                    )
                     # Fallback to plain text without parse_mode
                     fallback_payload = dict(payload)
                     fallback_payload.pop("parse_mode", None)
@@ -532,6 +618,11 @@ class TelegramClient:
             if "not modified" in desc:
                 return
             if "can't parse entities" in desc or "parse entities" in desc or "find end of the entity" in desc:
+                LOG.warning(
+                    "Telegram editMessageText HTML parse failed: %s; falling back to plain text for text: %.200r",
+                    data.get("description"),
+                    text,
+                )
                 fallback_payload = dict(payload)
                 fallback_payload.pop("parse_mode", None)
                 fallback_payload["text"] = text

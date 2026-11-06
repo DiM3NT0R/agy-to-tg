@@ -6,6 +6,7 @@ import pytest
 from src.config import TelegramConfig
 from src.telegram import (
     InboundMessage,
+    balance_telegram_tags,
     chunk_message,
     is_authorized,
     markdown_to_telegram_html,
@@ -198,4 +199,31 @@ def test_markdown_to_telegram_html_preserves_pre_code_blocks() -> None:
     assert "<b>Изменения git diff:</b>" in html_out
     assert '<pre><code class="language-diff">--- a/file.py\n+++ b/file.py\n- old line\n+ new line</code></pre>' in html_out
     assert "&lt;pre&gt;" not in html_out
+
+
+def test_markdown_to_telegram_html_handles_tags_inside_backticks() -> None:
+    raw = "Используй `<blockquote expandable>` и `<b>тест</b>` для цитат."
+    html_out = markdown_to_telegram_html(raw)
+    assert "<code>&lt;blockquote expandable&gt;</code>" in html_out
+    assert "<code>&lt;b&gt;тест&lt;/b&gt;</code>" in html_out
+    assert "<blockquote" not in html_out
+
+
+def test_markdown_to_telegram_html_balances_unclosed_tags() -> None:
+    raw = "<blockquote>Начало цитаты <b>жирный"
+    html_out = markdown_to_telegram_html(raw)
+    assert html_out.endswith("</b></blockquote>")
+
+
+def test_markdown_to_telegram_html_strips_stray_closing_tags() -> None:
+    raw = "Обычный текст</b> без открытия"
+    html_out = markdown_to_telegram_html(raw)
+    assert "</b>" not in html_out
+    assert "Обычный текст без открытия" in html_out
+
+
+def test_balance_telegram_tags_properly_nests_interleaved_tags() -> None:
+    assert balance_telegram_tags("<b>Hello <i>world</b>") == "<b>Hello <i>world</i></b>"
+    assert balance_telegram_tags("<a href='http'>Link") == "<a href='http'>Link</a>"
+
 
