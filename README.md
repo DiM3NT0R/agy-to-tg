@@ -1,4 +1,4 @@
-# antigravity-telegram-bridge
+# OmniAgent Bridge (SubAgent Bridge)
 
 [English](#english) | [Русский](#русский)
 
@@ -7,148 +7,150 @@
 <a name="english"></a>
 ## English
 
-A lightweight Telegram bridge for interacting with the [Antigravity CLI (agy)](https://antigravity.google) directly from your messenger.
+**OmniAgent Bridge** is a feature-rich, asynchronous Telegram gateway for interacting with autonomous coding AI agents and CLI tools directly from your messenger.
 
-Forked and optimized for `agy`. The core feature is strict session isolation. A dedicated working directory and an independent `agy` process are spawned for each chat (or supergroup topic). Sessions do not overlap, and context is preserved across messages.
+Unlike conventional API wrappers that charge per-token, this bridge enables using your existing **flat-rate subscriptions** (such as **Google Antigravity** and **ChatGPT Plus/Pro / OpenAI Codex**) via official CLI tooling, alongside support for self-hosted and third-party **OpenAI-compatible APIs**.
 
-**Stack & Features:** Python 3.11+, systemd `--user`, background FIFO queueing, webhooks.
+### 🌟 Core Highlights
 
-### Key Features
-* **Full agy Proxying:** Forwards prompts, image uploads, and documents.
-* **Environment Isolation:** Separate folders per chat. Supports `--new-project` and `--continue`.
-* **Inline Control Panel:** Select AI model, execution mode, reasoning effort, and timeouts directly in the chat via `/settings`.
-* **Group Chat Ready:** Correctly handles bot mentions (e.g., `/command@botname`) and forum topics.
-* **Resilience:** 
-  - Spam protection (sliding window rate limiter).
-  - Memory consumption control with automatic restarts (OOM-gate).
-  - Zombie process reaping and garbage collection.
-* **Deployment:** Ready-to-use systemd units, Prometheus (`/metrics`), and health checks.
+* **Multi-Engine Architecture:**
+  * **Google Antigravity (`agy`):** Access Gemini 3.8 Flash, Gemini 4 Argon, Claude Opus 5.5 High via Google account subscriptions.
+  * **OpenAI Codex (`codex`):** Access GPT-6.1 Sol, GPT-6 Astra, GPT-5.6 Luna, o3 via ChatGPT Plus/Pro device OAuth.
+  * **OpenAI-Compatible APIs (Roadmap):** Direct connection to OpenRouter, DeepSeek, Ollama, vLLM, LM Studio.
+* **Subscription-Powered (Zero Per-Token Bills):**
+  * Seamlessly authenticate ChatGPT Plus/Pro via `/auth` directly in Telegram using the interactive Device Code flow.
+  * Google OAuth CLI session auto-refresh.
+* **Interactive Live Thinking & Checkpoints:**
+  * Real-time reasoning and execution checkpoint streaming in Telegram status messages without cluttering the chat.
+  * Collapsible expandable blockquotes (`<blockquote expandable>`) for thought history.
+* **Interactive Quick-Reply Question Buttons:**
+  * Automatically detects multiple-choice questions asked by the model (`• Option 1`, `1. Option 2`, etc.).
+  * Renders 1-tap inline buttons in real time during live execution (via `codex queue`) and on completed answers.
+* **Cross-Engine Token Handoff & Context Compaction:**
+  * Switch models or engines mid-chat (`/model` or `/engine`) without losing context — automatic summary distillation preserves project continuity.
+* **Voice-First Experience:**
+  * Voice message transcription via Groq Whisper (`whisper-large-v3-turbo`).
+  * Text-to-speech voice replies via Cartesia or Yandex SpeechKit.
+* **Strict Session Isolation & Security:**
+  * Dedicated working directory per chat and forum topic (`supergroup`).
+  * Whitelist-based access control (`allowed_user_ids`, `allowed_chat_ids`).
+  * Process group termination, zombie reaping, and OOM protection.
 
-### Setup & Installation
-Requires Linux, Python ≥3.11, the `uv` package manager, and a pre-authenticated `agy` CLI in your `$PATH`.
+### 🛠 Quick Start
 
-1. **Create a bot** via [@BotFather](https://t.me/BotFather) and save the token. Find your Telegram ID via [@userinfobot](https://t.me/userinfobot).
-   > **Important:** If you plan to use the bot in a group chat, you must disable **Group Privacy** in BotFather settings; otherwise, the bot will not receive standard text messages.
-2. **Authorize agy** on your server:
-   ```bash
-   agy
-   # Complete the OAuth flow in your browser
-   ```
-3. **Deploy the bridge:**
-   ```bash
-   git clone https://github.com/DiM3NT0R/agy-to-tg.git ~/.gemini/extensions/antigravity-telegram-bridge
-   cd ~/.gemini/extensions/antigravity-telegram-bridge
-   ./install.sh
-   
-   cp config.example.json config.json
-   chmod 600 config.json
-   ```
-4. **Configure `config.json`:**
-   Insert your bot token and add your ID to `allowed_user_ids`. Running public bots without whitelists is strictly discouraged as it exposes your server to arbitrary code execution.
-5. **Start the service:**
-   ```bash
-   systemctl --user enable --now antigravity-telegram-bridge.service
-   # Ensure user lingering is enabled: loginctl enable-linger $USER
-   ```
+#### Requirements
+- Linux (x86_64 / aarch64)
+- Python ≥ 3.11
+- Pre-installed `agy` and/or `codex` CLI tools in `$PATH`
+- `uv` package manager
 
-### Commands
-* `/settings` — Interactive settings menu (model, effort, timeouts).
-* `/reset` — Force terminate the current session and start fresh.
-* `/status` — Session summary, memory usage, and working directory path.
-* `/image on|off` — Toggle image processing.
-* `/files` — List files in the session's inbox.
-* `/files clean` — Purge session files.
-* `/queue` — Internal message queue statistics.
+#### Installation
+```bash
+# Clone the repository
+git clone https://github.com/DiM3NT0R/agy-to-tg.git ~/.gemini/extensions/antigravity-telegram-bridge
+cd ~/.gemini/extensions/antigravity-telegram-bridge
 
-### Architecture
+# Run installation script (sets up virtualenv & dependencies)
+./install.sh
 
-An asynchronous Python daemon maintains a long-polling connection with Telegram (or listens via webhooks). 
-Incoming messages are pushed to a FIFO queue. The daemon extracts context (chat_id, topic) and spawns a child `agy -p` process. The `agy` stdout/stderr is intercepted and proxied back to Telegram.
-
-```mermaid
-flowchart LR
-    TG[Telegram API] <-->|long-poll / webhook| Bridge[Daemon]
-    Bridge <-->|state.json| State[("Local State")]
-    Bridge -->|subprocess| Agy[agy CLI]
-    Agy -->|stdout/stderr| Bridge
+# Configure settings
+cp config.example.json config.json
+chmod 600 config.json
+nano config.json
 ```
 
-### Troubleshooting
-* **`Conflict: terminated by other getUpdates request`** — A duplicate bot instance is running. Ensure the service is active in only one place.
-* **Bot ignores group messages** — Check Group Privacy settings in BotFather (must be Disabled). You may need to re-add the bot to the group or promote it to administrator for changes to apply.
-* **Path access errors** — The daemon blocks attempts to escape the `chats_root` directory.
+#### Starting the Service
+```bash
+systemctl --user enable --now antigravity-telegram-bridge.service
+# Ensure user lingering is enabled: loginctl enable-linger $USER
+```
+
+### 💬 Key Bot Commands
+
+| Command | Description |
+| :--- | :--- |
+| `/settings` | Graphical menu for engine, model, thinking mode, effort, and timeouts |
+| `/model [name]` | Quick-switch active AI model or view available models |
+| `/engine [agy\|codex]` | Switch between Antigravity and Codex engines |
+| `/auth` | Interactive in-chat OAuth login card for OpenAI Codex |
+| `/thinking [live\|all\|off]` | Configure reasoning stream display |
+| `/voice` | Configure voice synthesis settings (speed, voice actor, auto-voice) |
+| `/status` | Current session diagnostics, active engine, token usage, and working directory |
+| `/reset` | Terminate current session and start fresh |
+| `/files` | Manage and inspect workspace files |
 
 ---
 
 <a name="русский"></a>
 ## Русский
 
-Легковесный Telegram-мост для работы с [Antigravity CLI (agy)](https://antigravity.google) прямо из мессенджера. 
+**OmniAgent Bridge** (ранее `agy-to-tg`) — универсальный асинхронный Telegram-мост для работы с автономными AI-агентами разработки и CLI-инструментами прямо из мессенджера.
 
-Форк оригинального проекта, доработанный для комфортной работы с `agy`. Основная фича — изоляция сессий. Для каждого чата (или темы в супергруппе) создается отдельная рабочая директория и независимый процесс `agy`. Сессии не пересекаются, контекст сохраняется между сообщениями.
+Главное преимущество моста — возможность использовать ваши **существующие подписки** (**Google Antigravity** и **ChatGPT Plus/Pro / OpenAI Codex**) через официальные CLI без платы за токены, а также подключение локальных и облачных **OpenAI-совместимых API**.
 
-**Стек и особенности:** Python 3.11+, systemd `--user`, фоновая очередь (FIFO), вебхуки.
+### 🌟 Ключевые возможности
 
-### Что внутри
-* **Полное проксирование в agy:** Отправка промптов, загрузка изображений и документов.
-* **Изоляция окружения:** Отдельные папки для каждого чата. Поддержка ключей `--new-project` и `--continue`.
-* **Управление через Inline-кнопки:** Выбор модели нейросети, режима работы (mode), уровня усердия (effort) и таймаутов прямо в чате (`/settings`).
-* **Адаптация под группы:** Корректная обработка упоминаний бота (вида `/command@botname`), поддержка топиков (форумов).
-* **Отказоустойчивость:** 
-  - Защита от спама (rate limiter на базе скользящего окна).
-  - Контроль потребления памяти с автоматическим рестартом (OOM-gate).
-  - Уборка зомби-процессов и сборка мусора.
-* **Деплой:** Готовые systemd-юниты, поддержка Prometheus (`/metrics`) и health-чеков.
+* **Мульти-движковая архитектура:**
+  * **Google Antigravity (`agy`):** Доступ к Gemini 3.8 Flash, Gemini 4 Argon, Claude Opus 5.5 High по подписке Google.
+  * **OpenAI Codex (`codex`):** Доступ к GPT-6.1 Sol, GPT-6 Astra, GPT-5.6 Luna, o3 по подписке ChatGPT Plus/Pro.
+  * **OpenAI-Compatible API (в разработке):** Подключение OpenRouter, DeepSeek, Ollama, vLLM, LM Studio.
+* **Работа по подписке (без счетов за API-токены):**
+  * Интерактивная авторизация в ChatGPT Plus/Pro прямо через Telegram по команде `/auth` (Device Code flow).
+  * Фоновое обновление OAuth-токенов Google через CLI.
+* **Живые размышления (Live Thinking):**
+  * Модель транслирует свои чекпоинты и размышления в реальном времени прямо в статус-сообщение Telegram.
+  * Поддержка сворачиваемых цитат (`<blockquote expandable>`) для итогового отображения хода мысли.
+* **Интерактивные кнопки вопросов:**
+  * Автоматическое распознавание вопросов с вариантами ответа (`• Вариант 1`, `1. Вариант 2` и т.д.).
+  * Вывод инлайн-кнопок прямо в процессе выполнения (через `codex queue`) и под итоговым ответом для выбора в 1 клик.
+* **Бесшовный переход между моделями (Context Compactor):**
+  * Смена движков и моделей прямо посреди диалога без потери контекста проекта — суммаризация и эстафета истории.
+* **Голосовое управление:**
+  * Распознавание входящих голосовых через Groq Whisper (`whisper-large-v3-turbo`).
+  * Озвучка ответов голосом через Cartesia или Yandex SpeechKit.
+* **Изоляция и безопасность:**
+  * Отдельная рабочая директория под каждый чат и топик супергруппы.
+  * Контроль доступа по белым спискам (`allowed_user_ids`, `allowed_chat_ids`).
+  * Защита от OOM, утечек памяти и сборка зомби-процессов.
 
-### Установка и запуск
-Для работы требуется Linux, Python ≥3.11, менеджер пакетов `uv` и предварительно авторизованный `agy` CLI в `$PATH`.
+### 🛠 Установка и запуск
 
-1. **Создайте бота** через [@BotFather](https://t.me/BotFather) и сохраните токен. Узнайте свой Telegram ID через [@userinfobot](https://t.me/userinfobot).
-   > **Важно:** Если бот будет работать в группе, обязательно отключите **Group Privacy** в настройках BotFather, иначе он не будет видеть обычные текстовые сообщения.
-2. **Авторизуйте agy** на сервере:
-   ```bash
-   agy
-   # Пройдите OAuth авторизацию в браузере
-   ```
-3. **Разверните мост:**
-   ```bash
-   git clone https://github.com/DiM3NT0R/agy-to-tg.git ~/.gemini/extensions/antigravity-telegram-bridge
-   cd ~/.gemini/extensions/antigravity-telegram-bridge
-   ./install.sh
-   
-   cp config.example.json config.json
-   chmod 600 config.json
-   ```
-4. **Настройте `config.json`:**
-   Впишите токен бота и добавьте свой ID в `allowed_user_ids`. Запуск публичных ботов без вайтлистов строго не рекомендуется — это прямой путь к исполнению произвольного кода на вашем сервере.
-5. **Запустите службу:**
-   ```bash
-   systemctl --user enable --now antigravity-telegram-bridge.service
-   # Убедитесь, что для вашего юзера включен linger: loginctl enable-linger $USER
-   ```
+#### Требования
+- Linux (x86_64 / aarch64)
+- Python ≥ 3.11
+- Установленные утилиты `agy` и/или `codex` в `$PATH`
+- Пакетный менеджер `uv`
 
-### Доступные команды
-* `/settings` — графическое меню настроек (выбор модели, effort, таймаутов).
-* `/reset` — принудительно завершить текущую сессию и начать новую с чистого листа.
-* `/status` — сводка по текущей сессии, потреблению памяти и пути к рабочей директории.
-* `/image on|off` — включить/отключить обработку загружаемых изображений.
-* `/files` — список файлов во входящей директории сессии.
-* `/files clean` — очистка файлов сессии.
-* `/queue` — статистика внутренней очереди сообщений.
+#### Развёртывание
+```bash
+git clone https://github.com/DiM3NT0R/agy-to-tg.git ~/.gemini/extensions/antigravity-telegram-bridge
+cd ~/.gemini/extensions/antigravity-telegram-bridge
+./install.sh
 
-### Архитектура работы
-Под капотом крутится асинхронный демон на Python, который держит long-polling соединение с Telegram (или слушает вебхуки). 
-При получении сообщения демон ставит его в FIFO-очередь, извлекает нужный контекст (chat_id, тему) и спавнит дочерний процесс `agy -p`. Вывод `agy` перехватывается и отправляется обратно в Telegram.
-
-```mermaid
-flowchart LR
-    TG[Telegram API] <-->|long-poll / webhook| Bridge[Daemon]
-    Bridge <-->|state.json| State[("Local State")]
-    Bridge -->|subprocess| Agy[agy CLI]
-    Agy -->|stdout/stderr| Bridge
+cp config.example.json config.json
+chmod 600 config.json
+nano config.json
 ```
 
-### Траблшутинг
-* **`Conflict: terminated by other getUpdates request`** — запущен дубликат бота. Убедитесь, что сервис запущен только в одном экземпляре.
-* **Бот не отвечает в группе** — проверьте настройки Group Privacy в BotFather (должно быть Disabled). После изменения настройки может потребоваться передобавить бота в группу или выдать ему права администратора.
-* **Ошибки доступа к путям** — демон блокирует попытки выхода за пределы `chats_root`.
+#### Запуск службы
+```bash
+systemctl --user enable --now antigravity-telegram-bridge.service
+# Включите linger для работы сервиса в фоне: loginctl enable-linger $USER
+```
+
+### 💬 Основные команды
+
+| Команда | Описание |
+| :--- | :--- |
+| `/settings` | Интерактивное меню настроек (выбор движка, модели, режима размышлений, таймаутов) |
+| `/model [название]` | Быстрое переключение модели или просмотр доступного списка |
+| `/engine [agy\|codex]` | Переключение активного движка (Antigravity или Codex) |
+| `/auth` | Интерактивная карточка входа в OpenAI Codex прямо в чате |
+| `/thinking [live\|all\|off]` | Настройка отображения хода размышлений модели |
+| `/voice` | Настройка голосового вывода (скорость, диктор, авто-озвучка) |
+| `/status` | Сводка по активной сессии, токенам, памяти и рабочей папке |
+| `/reset` | Принудительный перезапуск текущей сессии с чистого листа |
+| `/files` | Управление файлами в рабочей директории |
+
+### 🗺 Планы развития (Roadmap)
+Подробный план интеграции OpenAI-совместимых провайдеров и локальных моделей см. в файле [TODO.md](file:///root/.gemini/extensions/antigravity-telegram-bridge/TODO.md).
