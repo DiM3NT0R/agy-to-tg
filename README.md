@@ -72,7 +72,8 @@ systemctl --user enable --now antigravity-telegram-bridge.service
 | `/settings` | Graphical menu for engine, model, thinking mode, effort, and timeouts |
 | `/model [name]` | Quick-switch active AI model or view available models |
 | `/engine [agy\|codex]` | Switch between Antigravity and Codex engines |
-| `/auth` | Interactive in-chat OAuth login card for OpenAI Codex |
+| `/account` (`/auth`) | Multi-account manager for OpenAI Codex: 1-click account switching, OAuth login |
+| `/codex_key [sk-...]` | Quickly set or add an OpenAI API key (auto-deletes key message from chat) |
 | `/thinking [live\|all\|off]` | Configure reasoning stream display |
 | `/voice` | Configure voice synthesis settings (speed, voice actor, auto-voice) |
 | `/status` | Current session diagnostics, active engine, token usage, and working directory |
@@ -145,7 +146,8 @@ systemctl --user enable --now antigravity-telegram-bridge.service
 | `/settings` | Интерактивное меню настроек (выбор движка, модели, режима размышлений, таймаутов) |
 | `/model [название]` | Быстрое переключение модели или просмотр доступного списка |
 | `/engine [agy\|codex]` | Переключение активного движка (Antigravity или Codex) |
-| `/auth` | Интерактивная карточка входа в OpenAI Codex прямо в чате |
+| `/account` (`/auth`) | Менеджер аккаунтов Codex: переключение в 1 клик, профили, OAuth вход |
+| `/codex_key [sk-...]` | Добавление OpenAI API ключа (сообщение с ключом авто-удаляется из чата) |
 | `/thinking [live\|all\|off]` | Настройка отображения хода размышлений модели |
 | `/voice` | Настройка голосового вывода (скорость, диктор, авто-озвучка) |
 | `/status` | Сводка по активной сессии, токенам, памяти и рабочей папке |

@@ -51,6 +51,8 @@ HELP_TEXT = (
     "/pwd      — показать рабочую папку чата\n"
     "/status   — сводка по системе и текущему чату\n"
     "/settings — панель управления с кнопками\n"
+    "/account  — управление и смена аккаунтов OpenAI Codex (/auth)\n"
+    "/codex_key — подключить OpenAI по API ключу\n"
     "/model    — выбрать модель (переопределяет настройки для чата)\n"
     "/effort   — выбрать уровень effort (low/medium/high)\n"
     "/timeout  — таймаут работы агента (напр. 30m, 1h)\n"
@@ -153,7 +155,7 @@ def _settings_keyboard() -> InlineKeyboard:
             {"text": "📁 Диалоги", "callback_data": "nav:projects"},
         ],
         [
-            {"text": "🔐 Авторизация", "callback_data": "nav:auth"},
+            {"text": "🔐 Аккаунты Codex", "callback_data": "nav:auth"},
             {"text": "🗜️ Сжать контекст", "callback_data": "do_compact"},
         ],
         [
@@ -430,30 +432,108 @@ _ACTIVE_AUTH_CANCELS: dict[int, asyncio.Event] = {}
 
 async def _render_auth_card() -> BridgeReply:
     from src.codex_runner import check_codex_auth
+    from src.codex_accounts import (
+        load_saved_accounts,
+        read_active_auth_data,
+        parse_auth_data,
+    )
+
     codex_ok, codex_status = await check_codex_auth()
+    saved_accs = load_saved_accounts()
 
     agy_status = "Авторизован (OAuth Google)"
     codex_status_text = f"Авторизован ({codex_status})" if codex_ok else "Не авторизован"
     codex_icon = "🟢" if codex_ok else "⚪️"
 
-    text = (
-        "🔐 <b>Статус авторизации CLI-движков</b>\n\n"
-        f"🟢 <b>Google Antigravity:</b> {agy_status}\n"
-        f"{codex_icon} <b>OpenAI Codex:</b> {codex_status_text}\n\n"
-        "<i>Codex CLI поддерживает авторизацию по протоколу OAuth Device Code. "
-        "Вы можете войти или обновить токен прямо из Telegram.</i>"
-    )
-
-    btn_text = "🔄 Переавторизовать Codex" if codex_ok else "🔑 Войти в OpenAI Codex"
-    keyboard = [
-        [{"text": btn_text, "callback_data": "auth:codex"}],
-        [{"text": "← Назад к настройкам", "callback_data": "nav:settings"}],
+    lines = [
+        "🔐 <b>Авторизация и аккаунты CLI-агентов</b>\n",
+        f"🟢 <b>Google Antigravity:</b> {agy_status}",
+        f"{codex_icon} <b>OpenAI Codex:</b> {codex_status_text}",
     ]
-    return BridgeReply(text=text, keyboard=keyboard)
+
+    active_acc = next((a for a in saved_accs if a.is_active), None)
+    if active_acc and codex_ok:
+        email_display = f"<code>{html.escape(active_acc.email or active_acc.label)}</code>"
+        name_str = f" ({html.escape(active_acc.name)})" if active_acc.name else ""
+        mode_str = "ChatGPT Subscription (OAuth)" if active_acc.auth_mode == "chatgpt" else "OpenAI API Key"
+        lines.append(f"   👤 <b>Текущий:</b> {email_display}{name_str}")
+        lines.append(f"   🔑 <b>Тип:</b> {mode_str}")
+    elif not codex_ok:
+        lines.append("   ⚠️ <i>Вход в Codex не выполнен. Подключите аккаунт ниже:</i>")
+
+    keyboard: InlineKeyboard = []
+
+    # If there are multiple saved accounts, show fast switcher buttons
+    if len(saved_accs) > 1:
+        lines.append(f"\n📁 <b>Сохраненные аккаунты Codex ({len(saved_accs)}):</b>")
+        for acc in saved_accs:
+            marker = "● " if acc.is_active else "○ "
+            state = " — <i>активен</i>" if acc.is_active else ""
+            lines.append(f"• {marker}<b>{html.escape(acc.label)}</b>{state}")
+
+        # Account switch buttons row (2 buttons per row)
+        row: list[dict[str, Any]] = []
+        for acc in saved_accs:
+            marker = "● " if acc.is_active else "○ "
+            lbl = acc.label
+            if len(lbl) > 18:
+                lbl = lbl[:16] + ".."
+            row.append({"text": f"{marker}{lbl}", "callback_data": f"acc:switch:{acc.id}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+    # Actions keyboard
+    action_row: list[dict[str, Any]] = []
+    if codex_ok:
+        action_row.append({"text": "➕ Добавить аккаунт", "callback_data": "auth:codex"})
+    else:
+        action_row.append({"text": "🔑 Войти в ChatGPT (OAuth)", "callback_data": "auth:codex"})
+    action_row.append({"text": "🔑 API ключ", "callback_data": "acc:add_key"})
+    keyboard.append(action_row)
+
+    manage_row: list[dict[str, Any]] = []
+    if len(saved_accs) > 1:
+        manage_row.append({"text": "🗑 Удалить аккаунт", "callback_data": "acc:del_menu"})
+    if codex_ok:
+        manage_row.append({"text": "🚪 Выйти", "callback_data": "acc:logout"})
+    if manage_row:
+        keyboard.append(manage_row)
+
+    keyboard.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+def _render_delete_accounts_menu(saved_accs: list[Any]) -> BridgeReply:
+    lines = [
+        "🗑 <b>Удаление сохраненного аккаунта Codex</b>\n",
+        "Выберите аккаунт для удаления из моста:\n",
+    ]
+    keyboard: InlineKeyboard = []
+    for acc in saved_accs:
+        marker = " [активен]" if acc.is_active else ""
+        lines.append(f"• <b>{html.escape(acc.label)}</b>{marker}")
+        lbl = acc.label
+        if len(lbl) > 22:
+            lbl = lbl[:20] + ".."
+        keyboard.append([{"text": f"🗑 Удалить {lbl}", "callback_data": f"acc:delete:{acc.id}"}])
+    keyboard.append([{"text": "← Назад к аккаунтам", "callback_data": "nav:auth"}])
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
 
 
 async def _run_device_auth_flow(tg: Any, chat_id: int, message_id: int):
     from src.codex_runner import run_codex_device_auth
+    from src.codex_accounts import (
+        backup_active_auth_for_login,
+        restore_backup_after_aborted_login,
+        clean_login_backup,
+        read_active_auth_data,
+        save_account_data,
+    )
+
+    backup_active_auth_for_login()
 
     cancel_ev = asyncio.Event()
     _ACTIVE_AUTH_CANCELS[chat_id] = cancel_ev
@@ -463,11 +543,14 @@ async def _run_device_auth_flow(tg: Any, chat_id: int, message_id: int):
             await tg.edit_message_text(
                 chat_id,
                 message_id,
-                f"🔐 <b>Авторизация в OpenAI Codex</b>\n\n"
+                f"🔐 <b>Авторизация в OpenAI Codex (OAuth)</b>\n\n"
                 f"1️⃣ Перейдите по ссылке:\n{url}\n\n"
                 f"2️⃣ Введите код:\n<code>{code}</code> <i>(нажмите для копирования)</i>\n\n"
                 f"⏳ <i>Ожидание подтверждения в браузере (до 15 минут)...</i>",
-                keyboard=[[{"text": "❌ Отмена", "callback_data": "auth:cancel"}]],
+                keyboard=[
+                    [{"text": "🔗 Открыть auth.openai.com", "url": url}],
+                    [{"text": "❌ Отмена", "callback_data": "auth:cancel"}],
+                ],
             )
         except Exception as e:
             LOG.warning("Failed to update auth message: %s", e)
@@ -475,36 +558,88 @@ async def _run_device_auth_flow(tg: Any, chat_id: int, message_id: int):
     try:
         ok, msg = await run_codex_device_auth(on_code, cancel_event=cancel_ev)
         if ok:
+            clean_login_backup()
+            new_auth = read_active_auth_data()
+            details = ""
+            if new_auth:
+                saved_acc = save_account_data(new_auth, make_active=True)
+                email_str = f"<code>{html.escape(saved_acc.email or saved_acc.label)}</code>"
+                name_str = f" ({html.escape(saved_acc.name)})" if saved_acc.name else ""
+                details = f"\n\n👤 <b>Подключен:</b> {email_str}{name_str}\n🔑 <b>Режим:</b> ChatGPT Subscription"
+
             await tg.edit_message_text(
                 chat_id,
                 message_id,
-                "✅ <b>Авторизация в OpenAI Codex успешно завершена!</b>\n\n"
-                "Теперь вам доступны модели GPT-6.1 Sol, GPT-6 Astra, GPT-6.1 Terra и др.",
+                f"✅ <b>Авторизация в OpenAI Codex успешно завершена!</b>{details}\n\n"
+                "Аккаунт сохранен и выбран активным. Теперь вам доступны модели GPT-6.1 Sol, GPT-6 Astra, GPT-6.1 Terra и др.",
                 keyboard=[
-                    [{"text": "🤖 Выбрать модель Codex", "callback_data": "nav:model"}],
+                    [{"text": "👤 Аккаунты Codex", "callback_data": "nav:auth"}],
+                    [{"text": "🤖 Выбрать модель", "callback_data": "nav:model"}],
                     [{"text": "⚙️ Настройки", "callback_data": "nav:settings"}],
                 ],
             )
         else:
+            restore_backup_after_aborted_login()
             await tg.edit_message_text(
                 chat_id,
                 message_id,
                 f"⚠️ <b>Авторизация не завершена</b>\n\n{msg}",
                 keyboard=[
                     [{"text": "🔄 Попробовать снова", "callback_data": "auth:codex"}],
-                    [{"text": "← Назад к настройкам", "callback_data": "nav:settings"}],
+                    [{"text": "← К управлению аккаунтами", "callback_data": "nav:auth"}],
                 ],
             )
     except Exception as e:
+        restore_backup_after_aborted_login()
         LOG.error("Device auth flow failed: %s", e)
     finally:
         _ACTIVE_AUTH_CANCELS.pop(chat_id, None)
+
+
+async def _handle_codex_key_cmd(key_arg: str, msg: "InboundMessage", tg: Any = None) -> BridgeReply:
+    clean_key = key_arg.strip()
+    if not clean_key:
+        return BridgeReply(
+            "🔑 <b>Установка API ключа OpenAI Codex</b>\n\n"
+            "Отправьте команду:\n<code>/codex_key sk-...</code>\n\n"
+            "<i>(Бот сразу удалит сообщение с ключом из чата для безопасности)</i>",
+            keyboard=[[{"text": "← К управлению аккаунтами", "callback_data": "nav:auth"}]],
+        )
+
+    from src.codex_accounts import save_account_data
+    auth_data = {
+        "auth_mode": "api_key",
+        "OPENAI_API_KEY": clean_key,
+        "tokens": None,
+    }
+    acc = save_account_data(auth_data, make_active=True)
+
+    # Attempt to delete the message containing secret key
+    if tg and getattr(msg, "message_id", None):
+        try:
+            asyncio.create_task(tg.delete_message(msg.chat_id, msg.message_id))
+        except Exception:
+            pass
+
+    return BridgeReply(
+        f"✅ <b>API ключ OpenAI успешно сохранен и активирован!</b>\n\n"
+        f"👤 <b>Аккаунт:</b> <code>{html.escape(acc.label)}</code>\n"
+        f"🔑 <b>Режим:</b> OpenAI API Key\n\n"
+        f"<i>(Сообщение с ключом удалено из чата для безопасности)</i>",
+        keyboard=[
+            [{"text": "👤 Аккаунты Codex", "callback_data": "nav:auth"}],
+            [{"text": "🤖 Выбрать модель", "callback_data": "nav:model"}],
+            [{"text": "⚙️ Настройки", "callback_data": "nav:settings"}],
+        ],
+        toast="API ключ сохранен!",
+    )
 
 
 async def handle_text_command(
     msg: "InboundMessage",
     cs: "ChatState",
     cfg: "Config",
+    tg: Any = None,
 ) -> BridgeReply | None:
     """Return a reply for a slash command, else None (forward to agy)."""
     stripped = msg.text.strip()
@@ -527,8 +662,14 @@ async def handle_text_command(
         return BridgeReply(render_status(cs, cfg))
     if cmd == "/settings":
         return _render_settings(cs, cfg)
-    if cmd in ("/auth", "/login"):
+    if cmd in ("/auth", "/login", "/account", "/accounts", "/codex_account"):
         return await _render_auth_card()
+    if cmd == "/codex_login":
+        if args:
+            return await _handle_codex_key_cmd(args, msg, tg)
+        return await _render_auth_card()
+    if cmd in ("/codex_key", "/codex_token"):
+        return await _handle_codex_key_cmd(args, msg, tg)
     if cmd == "/engine":
         if args:
             clean_eng = args.strip().lower()
@@ -749,10 +890,56 @@ async def handle_callback(
         cancel_ev = _ACTIVE_AUTH_CANCELS.get(cq.chat_id)
         if cancel_ev:
             cancel_ev.set()
+        from src.codex_accounts import restore_backup_after_aborted_login
+        restore_backup_after_aborted_login()
+        rep = await _render_auth_card()
         return BridgeReply(
-            "❌ Авторизация отменена.",
-            keyboard=[[{"text": "← Назад к настройкам", "callback_data": "nav:settings"}]],
-            toast="Отменено",
+            text=rep.text,
+            keyboard=rep.keyboard,
+            toast="Авторизация отменена",
+        )
+    if data.startswith("acc:switch:"):
+        acc_id = data.partition("acc:switch:")[2]
+        from src.codex_accounts import switch_account
+        ok, msg, acc = switch_account(acc_id)
+        rep = await _render_auth_card()
+        return BridgeReply(
+            text=rep.text,
+            keyboard=rep.keyboard,
+            toast=msg if ok else f"Ошибка: {msg}",
+        )
+    if data == "acc:del_menu":
+        from src.codex_accounts import load_saved_accounts
+        accs = load_saved_accounts()
+        rep = _render_delete_accounts_menu(accs)
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Выберите аккаунт для удаления")
+    if data.startswith("acc:delete:"):
+        acc_id = data.partition("acc:delete:")[2]
+        from src.codex_accounts import remove_account
+        ok, msg = remove_account(acc_id)
+        rep = await _render_auth_card()
+        return BridgeReply(
+            text=rep.text,
+            keyboard=rep.keyboard,
+            toast=msg if ok else f"Ошибка: {msg}",
+        )
+    if data == "acc:logout":
+        from src.codex_accounts import logout_active_account
+        ok, msg = logout_active_account()
+        rep = await _render_auth_card()
+        return BridgeReply(
+            text=rep.text,
+            keyboard=rep.keyboard,
+            toast=msg,
+        )
+    if data == "acc:add_key":
+        return BridgeReply(
+            "🔑 <b>Подключение OpenAI Codex по API ключу</b>\n\n"
+            "Отправьте команду в чат:\n"
+            "<code>/codex_key sk-...</code>\n\n"
+            "<i>(Бот сразу сохранит ключ и удалит сообщение из чата для безопасности)</i>",
+            keyboard=[[{"text": "← Назад к аккаунтам", "callback_data": "nav:auth"}]],
+            toast="Отправьте /codex_key <ключ>",
         )
     if data.startswith("getfile:"):
         relpath = data.partition(":")[2]

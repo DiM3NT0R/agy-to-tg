@@ -219,6 +219,7 @@ async def _do_turn(
         elif any(kw in reply.lower() for kw in ("исчерпана квота", "quota", "usage limit", "лимит использования")):
             reply_kb = [
                 [{"text": "⚡ Перейти на Gemini Flash", "callback_data": "m:gemini-3.8-flash-high"}],
+                [{"text": "👤 Сменить аккаунт Codex", "callback_data": "nav:auth"}],
                 [{"text": "📊 Проверить лимиты", "callback_data": "nav:limits"}, {"text": "🤖 Другая модель", "callback_data": "nav:model"}],
             ]
         else:
@@ -322,7 +323,7 @@ async def _process_text(
                 combined_text = mapped_cmd
             msg = replace(msg, text=combined_text)
 
-    reply = await handle_text_command(msg, cs, cfg)
+    reply = await handle_text_command(msg, cs, cfg, tg=tg)
     if reply is not None:
         save_state(state_path, state)
         if reply.text:
