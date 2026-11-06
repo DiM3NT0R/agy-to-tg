@@ -25,7 +25,7 @@ from src.questions import (
     get_question_options,
     store_question_options,
 )
-from src.queue import TurnQueue
+from src.queue import TurnQueue, session_key
 from src.state import ChatState, SessionKey, State, load_state, save_state
 from src.telegram import CallbackQuery, InboundMessage, TelegramClient, is_authorized
 from src.turn import ACTIVE_STOPS, execute_agy
@@ -346,32 +346,40 @@ async def _process_text(
                 LOG.error("sendDocument failed chat=%s: %s", msg.chat_id, err)
         return
 
+    q_key = session_key(msg.chat_id, msg.message_thread_id)
     status = await _QUEUE.submit(msg)
     if status is not None:
         await tg.send_message(msg.chat_id, status, message_thread_id=msg.message_thread_id)
         return
 
-    try:
-        await _do_turn(msg, tg, cs, cfg, agy_path)
-    finally:
-        _QUEUE.complete()
-        save_state(state_path, state)
-
-    while True:
-        next_item = _QUEUE.next()
-        if next_item is None:
-            break
-        nxt_msg, nxt_fut = next_item
-        nxt_cs = _ensure_chat_state(
-            state, nxt_msg.chat_id, nxt_msg.message_thread_id, chats_root
+    curr_msg: InboundMessage | None = msg
+    curr_fut: asyncio.Future[str | None] | None = None
+    while curr_msg is not None:
+        curr_cs = _ensure_chat_state(
+            state, curr_msg.chat_id, curr_msg.message_thread_id, chats_root
         )
         try:
-            await _do_turn(nxt_msg, tg, nxt_cs, cfg, agy_path)
+            await _do_turn(curr_msg, tg, curr_cs, cfg, agy_path)
+        except Exception as e:
+            LOG.error("Error in _do_turn chat=%s thread=%s: %s", curr_msg.chat_id, curr_msg.message_thread_id, e)
+            try:
+                await tg.send_message(
+                    curr_msg.chat_id,
+                    "❌ Произошла внутренняя ошибка моста при обработке запроса. Пожалуйста, повторите попытку.",
+                    message_thread_id=curr_msg.message_thread_id,
+                )
+            except Exception:
+                pass
         finally:
-            _QUEUE.complete()
-            if not nxt_fut.done():
-                nxt_fut.set_result(None)
+            _QUEUE.complete(q_key)
+            if curr_fut is not None and not curr_fut.done():
+                curr_fut.set_result(None)
             save_state(state_path, state)
+
+        next_item = _QUEUE.next(q_key)
+        if next_item is None:
+            break
+        curr_msg, curr_fut = next_item
 
 
 async def _process_callback(
@@ -427,7 +435,7 @@ async def _process_callback(
                             text=chosen_opt,
                             message_thread_id=cq.message_thread_id,
                         )
-                        await _QUEUE.submit(inbound)
+                        await _process_text(inbound, tg, state, state_path, chats_root, cfg, agy_path, info)
                     return
                 else:
                     try:

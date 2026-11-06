@@ -839,12 +839,8 @@ async def handle_text_command(
     if cmd == "/queue":
         import src.daemon
         sub = args.strip().lower()
-        if sub == "clear":
-            cleared = len(src.daemon._QUEUE.pending)
-            for _, _, _, _, fut in src.daemon._QUEUE.pending:
-                if not fut.done():
-                    fut.set_result(None)
-            src.daemon._QUEUE.pending.clear()
+        if sub in ("clear", "clean"):
+            cleared = src.daemon._QUEUE.clear()
             return BridgeReply(f"🧹 Очередь очищена (удалено сообщений: {cleared}).")
         return BridgeReply("📋 Статус очереди:\n" + "\n".join(src.daemon._QUEUE.status()))
     if cmd == "/update":
