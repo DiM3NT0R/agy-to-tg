@@ -1,7 +1,7 @@
 """Universal OpenAI-compatible API providers management.
 
 Supports:
-- ceapai.io, OpenRouter, DeepSeek, Groq, Ollama, vLLM, LM Studio, etc.
+- cheapai.io, OpenRouter, DeepSeek, Groq, Ollama, vLLM, LM Studio, etc.
 - Multi-provider configuration with custom base_url, api_key, and default_model
 - Dynamic model discovery via GET {base_url}/models
 - Secure local persistence in ~/.antigravity/bridge/openai_providers.json
@@ -28,11 +28,17 @@ _DEFAULT_STORAGE_PATH = Path.home() / ".antigravity" / "bridge" / "openai_provid
 
 # Common well-known presets for quick setup
 PROVIDER_PRESETS: dict[str, dict[str, str]] = {
-    "ceapai": {
-        "name": "CeapAI",
-        "base_url": "https://api.ceapai.io/v1",
+    "cheapai": {
+        "name": "CheapAI",
+        "base_url": "https://api.cheapai.io/v1",
         "default_model": "gpt-4o",
-        "description": "CeapAI Aggregator (Claude, GPT, Gemini, Grok)",
+        "description": "CheapAI Aggregator (Claude, GPT, Gemini, Grok)",
+    },
+    "ceapai": {
+        "name": "CheapAI",
+        "base_url": "https://api.cheapai.io/v1",
+        "default_model": "gpt-4o",
+        "description": "CheapAI Aggregator (cheapai.io alias)",
     },
     "openrouter": {
         "name": "OpenRouter",
@@ -75,13 +81,68 @@ def normalize_base_url(url: str) -> str:
     if not cleaned.startswith(("http://", "https://")):
         cleaned = "https://" + cleaned
     # If the URL ends with a domain or port without a path, append /v1
-    # e.g. https://api.ceapai.io -> https://api.ceapai.io/v1
+    # e.g. https://api.cheapai.io -> https://api.cheapai.io/v1
     parts = cleaned.split("://", 1)
     scheme = parts[0]
     rest = parts[1]
     if "/" not in rest:
         cleaned = f"{scheme}://{rest}/v1"
     return cleaned
+
+
+def is_url_like(val: str) -> bool:
+    """Check if a string looks like an endpoint URL or host:port."""
+    s = val.strip().lower()
+    if s.startswith(("http://", "https://")):
+        return True
+    if "/" in s:
+        return True
+    if "." in s and not s.isdigit():
+        return True
+    if ":" in s and any(c.isdigit() for c in s.split(":", 1)[1]):
+        return True
+    return False
+
+
+def derive_provider_from_url(url: str) -> tuple[str, str]:
+    """Derive sensible (id, display_name) from any arbitrary URL."""
+    norm = normalize_base_url(url)
+    try:
+        host = norm.split("://", 1)[1].split("/", 1)[0]
+        port = ""
+        if ":" in host:
+            host_no_port, port = host.split(":", 1)
+        else:
+            host_no_port = host
+
+        parts = host_no_port.split(".")
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            slug = f"host_{parts[-1]}"
+            if port and port not in ("80", "443"):
+                slug += f"_{port}"
+            display = f"Server {host}"
+            return slug, display
+
+        if len(parts) >= 2:
+            domain_part = parts[-2]
+            if domain_part in ("co", "com", "net", "org", "io", "ai", "ru", "app", "dev") and len(parts) >= 3:
+                domain_part = parts[-3]
+        else:
+            domain_part = parts[0]
+
+        slug = re.sub(r"[^a-zA-Z0-9_]", "_", domain_part.lower())
+        if port and port not in ("80", "443"):
+            slug = f"{slug}_{port}"
+
+        if slug in PROVIDER_PRESETS:
+            return slug, PROVIDER_PRESETS[slug]["name"]
+
+        display = domain_part.replace("-", " ").title()
+        if port and port not in ("80", "443"):
+            display += f" ({port})"
+        return slug or "custom", display or "Custom Provider"
+    except Exception:
+        return "custom", "Custom Provider"
 
 
 @dataclass
@@ -243,6 +304,66 @@ def delete_provider(provider_id: str, storage_path: Path | None = None) -> bool:
 
     save_providers(remaining, storage_path)
     return True
+
+
+def update_provider_url(
+    new_url: str,
+    provider_id: str = "",
+    storage_path: Path | None = None,
+) -> OpenAIProvider:
+    """Update base_url of specified or active provider, or create one."""
+    norm_url = normalize_base_url(new_url)
+    prov = get_provider(provider_id, storage_path) if provider_id else get_active_provider(storage_path)
+    if not prov:
+        slug, display = derive_provider_from_url(norm_url)
+        prov = OpenAIProvider(
+            id=slug,
+            name=display,
+            base_url=norm_url,
+            api_key="",
+            default_model="default",
+            is_active=True,
+        )
+    else:
+        prov.base_url = norm_url
+    return save_provider(prov, make_active=prov.is_active, storage_path=storage_path)
+
+
+def update_provider_key(
+    new_key: str,
+    provider_id: str = "",
+    storage_path: Path | None = None,
+) -> OpenAIProvider:
+    """Update api_key of specified or active provider."""
+    prov = get_provider(provider_id, storage_path) if provider_id else get_active_provider(storage_path)
+    if not prov:
+        prov = OpenAIProvider(
+            id="cheapai",
+            name="CheapAI",
+            base_url="https://api.cheapai.io/v1",
+            api_key=new_key.strip(),
+            default_model="gpt-4o",
+            is_active=True,
+        )
+    else:
+        prov.api_key = new_key.strip()
+    return save_provider(prov, make_active=prov.is_active, storage_path=storage_path)
+
+
+def update_provider_model(
+    new_model: str,
+    provider_id: str = "",
+    storage_path: Path | None = None,
+) -> OpenAIProvider | None:
+    """Update default_model of specified or active provider."""
+    prov = get_provider(provider_id, storage_path) if provider_id else get_active_provider(storage_path)
+    if not prov:
+        return None
+    cleaned = new_model.strip()
+    prov.default_model = cleaned
+    if cleaned and cleaned not in prov.models:
+        prov.models.append(cleaned)
+    return save_provider(prov, make_active=prov.is_active, storage_path=storage_path)
 
 
 async def fetch_provider_models(provider: OpenAIProvider, timeout: float = 6.0) -> list[str]:

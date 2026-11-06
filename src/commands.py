@@ -569,7 +569,7 @@ async def _render_providers_card() -> BridgeReply:
 
     lines = [
         "🌐 <b>OpenAI-совместимые API провайдеры</b>\n",
-        "Универсальное подключение сторонних API шлюзов и локальных серверов (CeapAI, OpenRouter, DeepSeek, Groq, Ollama, vLLM).\n",
+        "Универсальное подключение любого стороннего API или локального сервера (CheapAI, OpenRouter, DeepSeek, Groq, Ollama, vLLM).\n",
     ]
 
     if active_prov:
@@ -580,7 +580,7 @@ async def _render_providers_card() -> BridgeReply:
         if active_prov.models:
             lines.append(f"   📚 <b>Обнаружено моделей:</b> {len(active_prov.models)}")
     else:
-        lines.append("⚪️ <i>Провайдеры не настроены. Добавьте первый провайдер ниже:</i>")
+        lines.append("⚪️ <i>Провайдеры не настроены. Добавьте первый URL или эндпоинт ниже:</i>")
 
     keyboard: InlineKeyboard = []
 
@@ -606,19 +606,23 @@ async def _render_providers_card() -> BridgeReply:
             keyboard.append(row)
 
     # Action row
-    action_row: list[dict[str, Any]] = [
-        {"text": "➕ Добавить", "callback_data": "prov:add"},
-    ]
-    if active_prov:
-        action_row.append({"text": "🤖 Модели", "callback_data": "prov:models"})
-        action_row.append({"text": "🧪 Тест", "callback_data": "prov:test"})
-    keyboard.append(action_row)
+    keyboard.append([{"text": "➕ Добавить URL / провайдер", "callback_data": "prov:add"}])
 
-    manage_row: list[dict[str, Any]] = []
+    edit_row: list[dict[str, Any]] = []
+    if active_prov:
+        edit_row.append({"text": "🌐 Сменить URL", "callback_data": "prov:edit_url"})
+        edit_row.append({"text": "🔑 Сменить ключ", "callback_data": "prov:edit_key"})
+    if edit_row:
+        keyboard.append(edit_row)
+
+    tools_row: list[dict[str, Any]] = []
+    if active_prov:
+        tools_row.append({"text": "🤖 Модели", "callback_data": "prov:models"})
+        tools_row.append({"text": "🧪 Тест", "callback_data": "prov:test"})
     if provs:
-        manage_row.append({"text": "🗑 Удалить", "callback_data": "prov:del_menu"})
-    if manage_row:
-        keyboard.append(manage_row)
+        tools_row.append({"text": "🗑 Удалить", "callback_data": "prov:del_menu"})
+    if tools_row:
+        keyboard.append(tools_row)
 
     keyboard.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
     return BridgeReply(text="\n".join(lines), keyboard=keyboard)
@@ -626,24 +630,27 @@ async def _render_providers_card() -> BridgeReply:
 
 def _render_add_provider_help() -> BridgeReply:
     lines = [
-        "➕ <b>Добавление OpenAI-совместимого провайдера</b>\n",
-        "Отправьте команду в чат:",
-        "<code>/provider add &lt;id&gt; &lt;base_url&gt; &lt;api_key&gt; [модель]</code>\n",
-        "<b>Быстрые примеры:</b>",
-        "• <b>CeapAI (cheapai.io):</b>",
-        "<code>/provider add ceapai https://api.ceapai.io/v1 sk-... gpt-4o</code>",
-        "<i>(Или сокращенно: <code>/provider add ceapai sk-...</code>)</i>\n",
-        "• <b>OpenRouter:</b>",
-        "<code>/provider add openrouter sk-...</code>\n",
-        "• <b>DeepSeek:</b>",
-        "<code>/provider add deepseek sk-...</code>\n",
-        "• <b>Локальная Ollama:</b>",
-        "<code>/provider add ollama http://127.0.0.1:11434/v1 ollama qwen2.5-coder:32b</code>\n",
+        "🌐 <b>Подключение OpenAI-совместимого API (любой URL)</b>\n",
+        "Вы можете подключить <b>абсолютно любой OpenAI-совместимый URL</b> — список ничем не ограничен!\n",
+        "<b>1. Универсальная команда с любым URL:</b>",
+        "<code>/provider add &lt;URL&gt; &lt;api_key&gt; [модель]</code>\n",
+        "<b>Примеры:</b>",
+        "• <b>CheapAI:</b>",
+        "<code>/provider add https://api.cheapai.io/v1 sk-... gpt-4o</code>",
+        "<i>(или кратко: <code>/provider add cheapai sk-...</code>)</i>\n",
+        "• <b>Любой произвольный сервер:</b>",
+        "<code>/provider add http://127.0.0.1:11434/v1 ollama qwen2.5-coder:32b</code>",
+        "<code>/provider add https://api.together.xyz/v1 sk-... meta-llama/Llama-3.3-70B-Instruct-Turbo</code>\n",
+        "<b>2. Быстрое изменение активного провайдера:</b>",
+        "• <code>/provider url https://...</code> — изменить адрес",
+        "• <code>/provider key sk-...</code> — обновить API ключ",
+        "• <code>/provider model gpt-4o</code> — сменить модель\n",
+        "<b>3. Быстрые пресеты в один клик:</b>",
         "<i>(Сообщение с секретным API ключом сразу удаляется ботом из чата)</i>",
     ]
     keyboard = [
         [
-            {"text": "⚡️ CeapAI", "callback_data": "prov:preset:ceapai"},
+            {"text": "⚡️ CheapAI", "callback_data": "prov:preset:cheapai"},
             {"text": "⚡️ OpenRouter", "callback_data": "prov:preset:openrouter"},
         ],
         [
@@ -871,17 +878,40 @@ async def handle_text_command(
             if not rem_args:
                 return _render_add_provider_help()
 
-            prov_id = rem_args[0].lower()
-            if prov_id in PROVIDER_PRESETS and len(rem_args) == 2:
+            from src.openai_providers import is_url_like, derive_provider_from_url
+
+            # Format 1: Direct URL first
+            # e.g. /provider add https://api.cheapai.io/v1 sk-xxx [model]
+            if is_url_like(rem_args[0]) and len(rem_args) >= 2:
+                raw_url = rem_args[0]
+                base_u = normalize_base_url(raw_url)
+                key = rem_args[1]
+                def_m = rem_args[2] if len(rem_args) > 2 else ""
+                slug, display_name = derive_provider_from_url(base_u)
+                new_p = OpenAIProvider(
+                    id=slug,
+                    name=display_name,
+                    base_url=base_u,
+                    api_key=key,
+                    default_model=def_m,
+                )
+            # Format 2: Preset name first
+            # e.g. /provider add cheapai sk-xxx [model]
+            elif rem_args[0].lower() in PROVIDER_PRESETS and len(rem_args) >= 2:
+                prov_id = rem_args[0].lower()
                 preset = PROVIDER_PRESETS[prov_id]
+                def_m = rem_args[2] if len(rem_args) > 2 else preset.get("default_model", "")
                 new_p = OpenAIProvider(
                     id=prov_id,
                     name=preset["name"],
                     base_url=preset["base_url"],
                     api_key=rem_args[1],
-                    default_model=preset.get("default_model", ""),
+                    default_model=def_m,
                 )
-            elif len(rem_args) >= 3:
+            # Format 3: Explicit ID + URL + KEY + [MODEL]
+            # e.g. /provider add myprov https://api.cheapai.io/v1 sk-xxx [model]
+            elif len(rem_args) >= 3 and is_url_like(rem_args[1]):
+                prov_id = rem_args[0].lower()
                 base_u = normalize_base_url(rem_args[1])
                 key = rem_args[2]
                 def_m = rem_args[3] if len(rem_args) > 3 else ""
@@ -893,12 +923,22 @@ async def handle_text_command(
                     api_key=key,
                     default_model=def_m,
                 )
+            # Format 4: Update key of an existing saved provider
+            # e.g. /provider add cheapai sk-xxx
+            elif len(rem_args) == 2 and get_provider(rem_args[0].lower()):
+                prov_id = rem_args[0].lower()
+                existing = get_provider(prov_id)
+                assert existing is not None
+                existing.api_key = rem_args[1]
+                new_p = existing
             else:
                 return BridgeReply(
                     "⚠️ <b>Формат команды:</b>\n"
-                    "<code>/provider add &lt;id&gt; &lt;base_url&gt; &lt;api_key&gt; [модель]</code>\n\n"
+                    "<code>/provider add &lt;URL&gt; &lt;api_key&gt; [модель]</code>\n\n"
+                    "Например:\n"
+                    "<code>/provider add https://api.cheapai.io/v1 sk-... gpt-4o</code>\n\n"
                     "Или по пресету:\n"
-                    "<code>/provider add ceapai &lt;api_key&gt;</code>",
+                    "<code>/provider add cheapai &lt;api_key&gt;</code>",
                     keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
                 )
 
@@ -918,21 +958,95 @@ async def handle_text_command(
                 ],
             )
 
+        elif sub == "url":
+            if len(sub_parts) < 2:
+                p = get_active_provider()
+                cur = f"\nТекущий: <code>{p.base_url}</code>" if p else ""
+                return BridgeReply(
+                    "⚠️ <b>Укажите новый URL:</b>\n"
+                    f"<code>/provider url https://api.cheapai.io/v1</code>{cur}",
+                    keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
+                )
+            from src.openai_providers import update_provider_url
+            new_url = sub_parts[1]
+            saved = update_provider_url(new_url)
+            asyncio.create_task(fetch_provider_models(saved))
+            return BridgeReply(
+                f"✅ <b>Base URL обновлен для {html.escape(saved.name)}:</b>\n"
+                f"<code>{html.escape(saved.base_url)}</code>",
+                keyboard=[
+                    [{"text": "🧪 Проверить подключение", "callback_data": "prov:test"}],
+                    [{"text": "🌐 Все провайдеры", "callback_data": "nav:providers"}],
+                ],
+            )
+
+        elif sub in ("key", "token"):
+            if tg and getattr(msg, "message_id", None):
+                try:
+                    asyncio.create_task(tg.delete_message(msg.chat_id, msg.message_id))
+                except Exception:
+                    pass
+            if len(sub_parts) < 2:
+                return BridgeReply(
+                    "⚠️ <b>Укажите новый API ключ:</b>\n"
+                    "<code>/provider key sk-...</code>\n\n"
+                    "<i>(Сообщение с ключом будет удалено сразу после отправки)</i>",
+                    keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
+                )
+            from src.openai_providers import update_provider_key
+            new_key = sub_parts[1]
+            saved = update_provider_key(new_key)
+            return BridgeReply(
+                f"🔑 <b>API ключ для {html.escape(saved.name)} успешно обновлен!</b>\n"
+                f"<code>{html.escape(saved.masked_key)}</code>\n\n"
+                f"<i>(Сообщение с ключом удалено из чата для безопасности)</i>",
+                keyboard=[
+                    [{"text": "🧪 Проверить подключение", "callback_data": "prov:test"}],
+                    [{"text": "🌐 Все провайдеры", "callback_data": "nav:providers"}],
+                ],
+            )
+
+        elif sub == "model":
+            if len(sub_parts) < 2:
+                p = get_active_provider()
+                cur = f"\nТекущая модель: <code>{p.default_model}</code>" if (p and p.default_model) else ""
+                return BridgeReply(
+                    "⚠️ <b>Укажите название модели:</b>\n"
+                    f"<code>/provider model gpt-4o</code>{cur}",
+                    keyboard=[
+                        [{"text": "🤖 Выбрать из списка", "callback_data": "prov:models"}],
+                        [{"text": "← К провайдерам", "callback_data": "nav:providers"}],
+                    ],
+                )
+            from src.openai_providers import update_provider_model
+            new_model = sub_parts[1]
+            saved = update_provider_model(new_model)
+            if not saved:
+                return BridgeReply("⚠️ Нет активного провайдера. Сначала добавьте провайдер через <code>/provider add &lt;URL&gt; &lt;key&gt;</code>.")
+            return BridgeReply(
+                f"🤖 <b>Модель по умолчанию для {html.escape(saved.name)} изменена:</b>\n"
+                f"<code>{html.escape(saved.default_model)}</code>",
+                keyboard=[
+                    [{"text": "🌐 Все провайдеры", "callback_data": "nav:providers"}],
+                    [{"text": "🤖 Все модели", "callback_data": "prov:models"}],
+                ],
+            )
+
         elif sub in ("switch", "set", "use"):
             if len(sub_parts) < 2:
-                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider set ceapai</code>")
+                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider set cheapai</code>")
             target_id = sub_parts[1].lower()
             if set_active_provider(target_id):
                 p = get_active_provider()
                 return BridgeReply(
                     f"⚡️ Активный провайдер переключен на <b>{html.escape(p.name if p else target_id)}</b>",
-                    keyboard=[[{"text": "🌐 К провайдерам", "callback_data": "nav:providers"}]],
+                    keyboard=[[{"text": "🌐 К провайдерам", "callback_data": "nav:providers"}], [{"text": "🤖 Модели", "callback_data": "prov:models"}]],
                 )
             return BridgeReply(f"⚠️ Провайдер с ID <code>{html.escape(target_id)}</code> не найден.")
 
         elif sub in ("del", "delete", "remove"):
             if len(sub_parts) < 2:
-                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider del ceapai</code>")
+                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider del cheapai</code>")
             target_id = sub_parts[1].lower()
             if delete_provider(target_id):
                 return BridgeReply(
@@ -1271,6 +1385,31 @@ async def handle_callback(
         return await _render_providers_card()
     if data == "prov:add":
         return _render_add_provider_help()
+    if data == "prov:edit_url":
+        from src.openai_providers import get_active_provider
+        p = get_active_provider()
+        cur_url = p.base_url if p else "https://api.cheapai.io/v1"
+        return BridgeReply(
+            "🌐 <b>Изменение Base URL провайдера</b>\n\n"
+            f"Текущий адрес: <code>{html.escape(cur_url)}</code>\n\n"
+            "Чтобы задать новый URL, отправьте в чат:\n"
+            f"<code>/provider url {html.escape(cur_url)}</code>\n\n"
+            "<i>(Поддерживается абсолютно любой URL OpenAI-совместимого эндпоинта)</i>",
+            keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
+            toast="Отправьте /provider url <URL>",
+        )
+    if data == "prov:edit_key":
+        from src.openai_providers import get_active_provider
+        p = get_active_provider()
+        p_name = p.name if p else "провайдера"
+        return BridgeReply(
+            f"🔑 <b>Смена API ключа для {html.escape(p_name)}</b>\n\n"
+            "Отправьте команду в чат:\n"
+            "<code>/provider key sk-...</code>\n\n"
+            "<i>(Сообщение с секретным ключом сразу удалится ботом из чата для безопасности)</i>",
+            keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
+            toast="Отправьте /provider key <KEY>",
+        )
     if data.startswith("prov:preset:"):
         preset_name = data.partition("prov:preset:")[2]
         from src.openai_providers import PROVIDER_PRESETS

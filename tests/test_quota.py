@@ -314,16 +314,16 @@ def test_render_openai_provider_limits_card() -> None:
     from src.openai_providers import OpenAIProvider
 
     p = OpenAIProvider(
-        id="ceapai",
-        name="CeapAI",
-        base_url="https://api.ceapai.io/v1",
+        id="cheapai",
+        name="CheapAI",
+        base_url="https://api.cheapai.io/v1",
         api_key="sk-test",
         default_model="gpt-4o",
         models=["gpt-4o", "claude-3-5-sonnet"],
     )
     card = render_openai_provider_limits_card(p)
-    assert "CeapAI" in card
-    assert "https://api.ceapai.io/v1" in card
+    assert "CheapAI" in card
+    assert "https://api.cheapai.io/v1" in card
     assert "gpt-4o" in card
     assert "2" in card
 

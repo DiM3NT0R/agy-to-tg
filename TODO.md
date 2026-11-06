@@ -15,7 +15,7 @@
 #### 1.2. Архитектура и реализация движка
 - [x] **Универсальная форма настройки провайдеров в Telegram (`src/openai_providers.py`, `src/commands.py`):**
   - Интерактивное меню управления в `/settings ➔ 🌐 API Провайдеры` (`nav:providers`).
-  - Команда `/provider add <id> <base_url> <api_key> [model]` (и быстрые пресеты `/provider add ceapai <key>`).
+  - Команда `/provider add <url_or_id> <api_key> [model]` (ввод любого кастомного URL или пресеты `/provider add cheapai <key>`), команды `/provider url <url>`, `/provider key <key>`, `/provider model <model>`.
   - Быстрое переключение активного провайдера в 1 клик, безопасное автоудаление сообщений с ключами.
 - [x] **Потоковый клиент с инструментами (`src/openai_compat_runner.py`):**
   - Поддержка Server-Sent Events (SSE) потокового вывода `/v1/chat/completions`.

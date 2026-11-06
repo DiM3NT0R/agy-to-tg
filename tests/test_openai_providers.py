@@ -11,11 +11,16 @@ import httpx
 from src.openai_providers import (
     OpenAIProvider,
     normalize_base_url,
+    derive_provider_from_url,
+    is_url_like,
     save_provider,
     load_providers,
     get_active_provider,
     set_active_provider,
     delete_provider,
+    update_provider_url,
+    update_provider_key,
+    update_provider_model,
     fetch_provider_models,
     PROVIDER_PRESETS,
 )
@@ -26,29 +31,49 @@ from src.openai_compat_runner import (
 
 
 def test_normalize_base_url() -> None:
-    assert normalize_base_url("https://api.ceapai.io") == "https://api.ceapai.io/v1"
-    assert normalize_base_url("https://api.ceapai.io/") == "https://api.ceapai.io/v1"
-    assert normalize_base_url("https://api.ceapai.io/v1") == "https://api.ceapai.io/v1"
-    assert normalize_base_url("https://api.ceapai.io/v1/") == "https://api.ceapai.io/v1"
+    assert normalize_base_url("https://api.cheapai.io") == "https://api.cheapai.io/v1"
+    assert normalize_base_url("https://api.cheapai.io/") == "https://api.cheapai.io/v1"
+    assert normalize_base_url("https://api.cheapai.io/v1") == "https://api.cheapai.io/v1"
+    assert normalize_base_url("https://api.cheapai.io/v1/") == "https://api.cheapai.io/v1"
     assert normalize_base_url("http://localhost:11434/v1") == "http://localhost:11434/v1"
     assert normalize_base_url("api.deepseek.com") == "https://api.deepseek.com/v1"
     assert normalize_base_url("") == ""
 
 
-def test_provider_presets_contain_ceapai() -> None:
-    assert "ceapai" in PROVIDER_PRESETS
-    preset = PROVIDER_PRESETS["ceapai"]
-    assert "ceapai.io" in preset["base_url"]
+def test_derive_provider_from_url() -> None:
+    assert derive_provider_from_url("https://api.cheapai.io/v1") == ("cheapai", "CheapAI")
+    assert derive_provider_from_url("https://openrouter.ai/api/v1") == ("openrouter", "OpenRouter")
+    assert derive_provider_from_url("https://api.together.xyz/v1") == ("together", "Together")
+    assert derive_provider_from_url("http://localhost:11434/v1") == ("localhost_11434", "Localhost (11434)")
+    assert derive_provider_from_url("http://192.168.1.50:8000/v1") == ("host_50_8000", "Server 192.168.1.50:8000")
+
+
+def test_is_url_like() -> None:
+    assert is_url_like("https://api.cheapai.io/v1") is True
+    assert is_url_like("api.cheapai.io/v1") is True
+    assert is_url_like("localhost:11434") is True
+    assert is_url_like("cheapai") is False
+    assert is_url_like("openrouter") is False
+
+
+def test_provider_presets_contain_cheapai() -> None:
+    assert "cheapai" in PROVIDER_PRESETS
+    preset = PROVIDER_PRESETS["cheapai"]
+    assert "cheapai.io" in preset["base_url"]
+    assert preset["name"] == "CheapAI"
     assert preset["default_model"] == "gpt-4o"
+    # ceapai alias
+    assert "ceapai" in PROVIDER_PRESETS
+    assert PROVIDER_PRESETS["ceapai"]["base_url"] == "https://api.cheapai.io/v1"
 
 
 def test_save_and_load_providers(tmp_path: Path) -> None:
     storage = tmp_path / "providers.json"
     p1 = OpenAIProvider(
-        id="ceapai",
-        name="CeapAI",
-        base_url="https://api.ceapai.io/v1",
-        api_key="sk-ceapai-12345678",
+        id="cheapai",
+        name="CheapAI",
+        base_url="https://api.cheapai.io/v1",
+        api_key="sk-cheapai-12345678",
         default_model="gpt-4o",
     )
     saved = save_provider(p1, make_active=True, storage_path=storage)
@@ -57,8 +82,8 @@ def test_save_and_load_providers(tmp_path: Path) -> None:
 
     loaded = load_providers(storage)
     assert len(loaded) == 1
-    assert loaded[0].id == "ceapai"
-    assert loaded[0].base_url == "https://api.ceapai.io/v1"
+    assert loaded[0].id == "cheapai"
+    assert loaded[0].base_url == "https://api.cheapai.io/v1"
 
     # Add second provider
     p2 = OpenAIProvider(
@@ -74,24 +99,42 @@ def test_save_and_load_providers(tmp_path: Path) -> None:
     assert active is not None
     assert active.id == "deepseek"
 
-    # Switch back to ceapai
-    assert set_active_provider("ceapai", storage) is True
+    # Switch back to cheapai
+    assert set_active_provider("cheapai", storage) is True
     active = get_active_provider(storage)
     assert active is not None
-    assert active.id == "ceapai"
+    assert active.id == "cheapai"
 
     # Delete deepseek
     assert delete_provider("deepseek", storage) is True
     assert len(load_providers(storage)) == 1
 
 
+def test_update_provider_helpers(tmp_path: Path) -> None:
+    storage = tmp_path / "providers.json"
+    # Initially no provider; update_provider_url creates one
+    p = update_provider_url("https://api.cheapai.io/v1", storage_path=storage)
+    assert p.base_url == "https://api.cheapai.io/v1"
+    assert p.id == "cheapai"
+
+    # Update key
+    p2 = update_provider_key("sk-new-secret-key-1234", storage_path=storage)
+    assert p2.api_key == "sk-new-secret-key-1234"
+
+    # Update model
+    p3 = update_provider_model("claude-3-7-sonnet", storage_path=storage)
+    assert p3 is not None
+    assert p3.default_model == "claude-3-7-sonnet"
+    assert "claude-3-7-sonnet" in p3.models
+
+
 @pytest.mark.asyncio
 async def test_fetch_provider_models(tmp_path: Path) -> None:
     storage = tmp_path / "providers.json"
     prov = OpenAIProvider(
-        id="ceapai",
-        name="CeapAI",
-        base_url="https://api.ceapai.io/v1",
+        id="cheapai",
+        name="CheapAI",
+        base_url="https://api.cheapai.io/v1",
         api_key="sk-test",
     )
     save_provider(prov, make_active=True, storage_path=storage)
@@ -99,7 +142,7 @@ async def test_fetch_provider_models(tmp_path: Path) -> None:
     mock_resp = httpx.Response(
         200,
         json={"data": [{"id": "gpt-4o"}, {"id": "claude-3-5-sonnet"}, {"id": "deepseek-chat"}]},
-        request=httpx.Request("GET", "https://api.ceapai.io/v1/models"),
+        request=httpx.Request("GET", "https://api.cheapai.io/v1/models"),
     )
 
     with patch.object(httpx.AsyncClient, "get", return_value=mock_resp):
@@ -111,9 +154,9 @@ async def test_fetch_provider_models(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_openai_compat_streaming(tmp_path: Path) -> None:
     prov = OpenAIProvider(
-        id="ceapai",
-        name="CeapAI",
-        base_url="https://api.ceapai.io/v1",
+        id="cheapai",
+        name="CheapAI",
+        base_url="https://api.cheapai.io/v1",
         api_key="sk-test",
         default_model="gpt-4o",
     )
@@ -121,7 +164,7 @@ async def test_run_openai_compat_streaming(tmp_path: Path) -> None:
     chunks = [
         b"data: {\"choices\": [{\"delta\": {\"reasoning_content\": \"Thinking process...\"}}]}\n\n",
         b"data: {\"choices\": [{\"delta\": {\"content\": \"Hello from \"}}]}\n\n",
-        b"data: {\"choices\": [{\"delta\": {\"content\": \"CeapAI!\"}}]}\n\n",
+        b"data: {\"choices\": [{\"delta\": {\"content\": \"CheapAI!\"}}]}\n\n",
         b"data: {\"usage\": {\"prompt_tokens\": 10, \"completion_tokens\": 5}}\n\n",
         b"data: [DONE]\n\n",
     ]
@@ -148,7 +191,7 @@ async def test_run_openai_compat_streaming(tmp_path: Path) -> None:
             on_thought=on_thought,
         )
         assert result.exit_code == 0
-        assert result.text == "Hello from CeapAI!"
+        assert result.text == "Hello from CheapAI!"
         assert "Thinking process..." in result.thoughts
         assert result.input_tokens == 10
         assert result.output_tokens == 5
@@ -167,19 +210,45 @@ async def test_provider_slash_commands(tmp_path: Path, monkeypatch: pytest.Monke
     cfg = Config(telegram=TelegramConfig("tok", [1]), agy=AgyConfig("/tmp", "gemini-4-argon-low", "code"))
     cs = ChatState(chat_dir=str(tmp_path))
 
-    msg_add = InboundMessage(1, 10, 1, 1, "/provider add ceapai https://api.ceapai.io/v1 sk-test-key gpt-4o")
+    # Test 1: Direct URL first
+    msg_add = InboundMessage(1, 10, 1, 1, "/provider add https://api.cheapai.io/v1 sk-test-key gpt-4o")
     reply = await handle_text_command(msg_add, cs, cfg)
     assert reply is not None
-    assert "CeapAI" in reply.text
+    assert "CheapAI" in reply.text
     assert "успешно сохранен" in reply.text
 
     active = get_active_provider(storage)
     assert active is not None
-    assert active.id == "ceapai"
+    assert active.id == "cheapai"
+    assert active.base_url == "https://api.cheapai.io/v1"
     assert active.default_model == "gpt-4o"
 
-    # Test /engine openai
-    msg_eng = InboundMessage(2, 10, 1, 2, "/engine openai")
+    # Test 2: /provider url
+    msg_url = InboundMessage(2, 10, 1, 2, "/provider url https://new.cheapai.io/v1")
+    reply_url = await handle_text_command(msg_url, cs, cfg)
+    assert reply_url is not None
+    assert "https://new.cheapai.io/v1" in reply_url.text
+    active = get_active_provider(storage)
+    assert active.base_url == "https://new.cheapai.io/v1"
+
+    # Test 3: /provider key
+    msg_key = InboundMessage(3, 10, 1, 3, "/provider key sk-secret-99999999")
+    reply_key = await handle_text_command(msg_key, cs, cfg)
+    assert reply_key is not None
+    assert "успешно обновлен" in reply_key.text
+    active = get_active_provider(storage)
+    assert active.api_key == "sk-secret-99999999"
+
+    # Test 4: /provider model
+    msg_mod = InboundMessage(4, 10, 1, 4, "/provider model claude-3-7-sonnet")
+    reply_mod = await handle_text_command(msg_mod, cs, cfg)
+    assert reply_mod is not None
+    assert "claude-3-7-sonnet" in reply_mod.text
+    active = get_active_provider(storage)
+    assert active.default_model == "claude-3-7-sonnet"
+
+    # Test 5: /engine openai
+    msg_eng = InboundMessage(5, 10, 1, 5, "/engine openai")
     reply_eng = await handle_text_command(msg_eng, cs, cfg)
     assert reply_eng is not None
     assert "OPENAI" in reply_eng.text

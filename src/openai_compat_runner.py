@@ -1,7 +1,7 @@
 """Universal OpenAI-compatible API runner with streaming, thinking, and tool execution.
 
 Supports any provider implementing the standard /v1/chat/completions endpoint
-(ceapai.io, OpenRouter, DeepSeek, Groq, Ollama, vLLM, LM Studio, etc.).
+(cheapai.io, OpenRouter, DeepSeek, Groq, Ollama, vLLM, LM Studio, etc.).
 """
 from __future__ import annotations
 

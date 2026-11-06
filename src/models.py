@@ -157,7 +157,7 @@ def get_engine_for_model(model: str) -> str:
     if not model:
         return "agy"
     m = model.lower()
-    if m.startswith(("openai/", "ceapai/", "openrouter/", "deepseek/")):
+    if m.startswith(("openai/", "cheapai/", "ceapai/", "openrouter/", "deepseek/")):
         return "openai"
     try:
         from src.openai_providers import get_active_provider
