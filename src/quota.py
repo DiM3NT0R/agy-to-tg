@@ -413,7 +413,61 @@ class CodexQuotaSummary:
     account_id: str = ""
     key_masked: str = ""
     features_highlight: list[str] = field(default_factory=list)
+    primary_window: dict[str, Any] | None = None
+    secondary_window: dict[str, Any] | None = None
+    rate_limit_allowed: bool = True
+    rate_limit_reached: bool = False
+    unlimited_credits: bool = False
+    model_availability: dict[str, bool] = field(default_factory=dict)
+    reset_credits_available: int = 0
     error: str = ""
+
+
+def _format_codex_window_name(seconds: int) -> str:
+    """Format window duration into human-readable Russian label."""
+    if seconds >= 86400 * 5:  # ~7 days
+        return "Недельный лимит (Weekly window)"
+    elif 16000 <= seconds <= 20000:  # ~5 hours (18000s)
+        return "5-часовой скользящий лимит (5-Hour rolling)"
+    elif 9000 <= seconds <= 13000:  # ~3 hours (10800s)
+        return "3-часовой скользящий лимит (3-Hour rolling)"
+    elif 80000 <= seconds <= 90000:  # ~24 hours
+        return "Суточный лимит (24-Hour window)"
+    elif seconds > 0:
+        hours = round(seconds / 3600)
+        return f"{hours}-часовой лимит"
+    return "Скользящий лимит"
+
+
+def _render_codex_window_block(window: dict[str, Any]) -> list[str]:
+    """Render a single rate limit window block with progress bar and countdown."""
+    lines: list[str] = []
+    sec = int(window.get("limit_window_seconds") or 0)
+    w_name = _format_codex_window_name(sec)
+    used_pct = int(window.get("used_percent") or 0)
+    rem_pct = max(0, 100 - used_pct)
+    rem_frac = rem_pct / 100.0
+    bar = _format_progress_bar(rem_frac)
+
+    reset_at = window.get("reset_at")
+    reset_after = window.get("reset_after_seconds")
+    if reset_at:
+        try:
+            reset_iso = datetime.fromtimestamp(reset_at, timezone.utc).isoformat()
+            time_str = _format_time_left(reset_iso)
+        except Exception:
+            time_str = f"через {reset_after // 3600}ч" if reset_after else "—"
+    elif reset_after:
+        hours = reset_after // 3600
+        mins = (reset_after % 3600) // 60
+        time_str = f"<b>{hours}ч {mins}мин</b>"
+    else:
+        time_str = "—"
+
+    lines.append(f"▫️ <b>{html.escape(w_name)}:</b>")
+    lines.append(f"{bar} <i>(осталось {rem_pct}%, израсходовано {used_pct}%)</i>")
+    lines.append(f"⏳ Сброс: {time_str}\n")
+    return lines
 
 
 async def fetch_codex_limits(timeout: float = 6.0) -> CodexQuotaSummary:
@@ -474,12 +528,27 @@ async def fetch_codex_limits(timeout: float = 6.0) -> CodexQuotaSummary:
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(
+            resp_acc_task = client.get(
                 "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
                 headers=headers,
             )
-            if resp.status_code == 200:
-                data = resp.json()
+            resp_usage_task = client.get(
+                "https://chatgpt.com/backend-api/wham/usage",
+                headers=headers,
+            )
+            resp_acc, resp_usage = await asyncio.gather(resp_acc_task, resp_usage_task, return_exceptions=True)
+
+            acc_plan = baseline_plan
+            acc_display = baseline_plan.capitalize()
+            has_sub = bool(baseline_until)
+            renews = baseline_until
+            expires = baseline_until
+            curr = ""
+            will_ren = True
+            highlights = []
+
+            if isinstance(resp_acc, httpx.Response) and resp_acc.status_code == 200:
+                data = resp_acc.json()
                 accounts_dict = data.get("accounts") or {}
                 acc_info = accounts_dict.get(account_id) or (list(accounts_dict.values())[0] if accounts_dict else {})
                 acc_obj = acc_info.get("account") or {}
@@ -490,21 +559,66 @@ async def fetch_codex_limits(timeout: float = 6.0) -> CodexQuotaSummary:
                 wanted_feat = ["o3", "o3-mini", "o4_mini", "gpt5", "canvas", "voice_advanced_ga"]
                 highlights = [f for f in wanted_feat if f in raw_features]
 
-                return CodexQuotaSummary(
-                    email=email,
-                    auth_mode="chatgpt",
-                    plan_type=acc_obj.get("plan_type") or baseline_plan,
-                    plan_display_name=acc_obj.get("plan_display_name") or baseline_plan.capitalize(),
-                    has_active_subscription=bool(entitlement.get("has_active_subscription", True)),
-                    renews_at=entitlement.get("renews_at") or baseline_until,
-                    expires_at=entitlement.get("expires_at") or baseline_until,
-                    billing_currency=entitlement.get("billing_currency") or "",
-                    will_renew=bool(last_sub.get("will_renew", True)),
-                    account_id=account_id,
-                    features_highlight=highlights,
-                )
+                acc_plan = acc_obj.get("plan_type") or baseline_plan
+                acc_display = acc_obj.get("plan_display_name") or baseline_plan.capitalize()
+                has_sub = bool(entitlement.get("has_active_subscription", True))
+                renews = entitlement.get("renews_at") or baseline_until
+                expires = entitlement.get("expires_at") or baseline_until
+                curr = entitlement.get("billing_currency") or ""
+                will_ren = bool(last_sub.get("will_renew", True))
+
+            primary_win = None
+            secondary_win = None
+            allowed = True
+            reached = False
+            unlimited = False
+            mod_avail: dict[str, bool] = {}
+            res_cred_count = 0
+
+            if isinstance(resp_usage, httpx.Response) and resp_usage.status_code == 200:
+                u_data = resp_usage.json()
+                rl = u_data.get("rate_limit") or {}
+                allowed = bool(rl.get("allowed", True))
+                reached = bool(rl.get("limit_reached", False))
+                primary_win = rl.get("primary_window")
+                secondary_win = rl.get("secondary_window")
+
+                mu = u_data.get("model_usage") or {}
+                if isinstance(mu, dict):
+                    for mk, mv in mu.items():
+                        if isinstance(mv, dict):
+                            mod_avail[mk] = bool(mv.get("available", True))
+
+                cr = u_data.get("credits") or {}
+                if isinstance(cr, dict):
+                    unlimited = bool(cr.get("unlimited", False))
+
+                rc = u_data.get("rate_limit_reset_credits") or {}
+                if isinstance(rc, dict):
+                    res_cred_count = int(rc.get("available_count") or 0)
+
+            return CodexQuotaSummary(
+                email=email,
+                auth_mode="chatgpt",
+                plan_type=acc_plan,
+                plan_display_name=acc_display,
+                has_active_subscription=has_sub,
+                renews_at=renews,
+                expires_at=expires,
+                billing_currency=curr,
+                will_renew=will_ren,
+                account_id=account_id,
+                features_highlight=highlights,
+                primary_window=primary_win,
+                secondary_window=secondary_win,
+                rate_limit_allowed=allowed,
+                rate_limit_reached=reached,
+                unlimited_credits=unlimited,
+                model_availability=mod_avail,
+                reset_credits_available=res_cred_count,
+            )
     except Exception as exc:
-        LOG.debug("Live accounts/check query error: %s, falling back to JWT baseline", exc)
+        LOG.debug("Live accounts/check or usage query error: %s, falling back to JWT baseline", exc)
 
     return cqs
 
@@ -524,34 +638,65 @@ def render_codex_limits_card(cqs: CodexQuotaSummary) -> str:
         lines.append(f"▫️ Ключ: <code>{html.escape(cqs.key_masked)}</code>")
         lines.append("💳 <b>Тарификация:</b> Pay-as-you-go (по потребленным токенам)")
         lines.append("ℹ️ Скоростные лимиты определяются тиром вашего OpenAI аккаунта (Tier 1-5).")
+        return "\n".join(lines).strip()
+
+    plan_name = cqs.plan_display_name or cqs.plan_type.capitalize() or "Plus"
+    status_icon = "🟢" if cqs.has_active_subscription else "⚪️"
+    status_text = "Активна" if cqs.has_active_subscription else "Неактивна"
+
+    lines.append(f"⚡️ <b>План:</b> ChatGPT <b>{html.escape(plan_name)}</b> {status_icon} <i>({status_text})</i>")
+
+    target_date = cqs.renews_at or cqs.expires_at
+    if target_date:
+        time_left_str = _format_time_left(target_date)
+        lines.append(f"▫️ <b>Следующее продление:</b> {time_left_str}")
+        if cqs.billing_currency:
+            lines.append(f"▫️ <b>Валюта подписки:</b> <code>{html.escape(cqs.billing_currency)}</code>")
+
+    lines.append("───────────────")
+    lines.append("⏱ <b>Скользящие лимиты (Rate Limits):</b>")
+
+    has_live_windows = bool(cqs.primary_window or cqs.secondary_window)
+
+    if has_live_windows:
+        five_hour_found = False
+
+        if cqs.primary_window:
+            sec = int(cqs.primary_window.get("limit_window_seconds") or 0)
+            if 16000 <= sec <= 20000:
+                five_hour_found = True
+            lines.extend(_render_codex_window_block(cqs.primary_window))
+
+        if cqs.secondary_window:
+            sec = int(cqs.secondary_window.get("limit_window_seconds") or 0)
+            if 16000 <= sec <= 20000:
+                five_hour_found = True
+            lines.extend(_render_codex_window_block(cqs.secondary_window))
+        elif not five_hour_found:
+            lines.append("▫️ <b>5-часовой скользящий лимит:</b>")
+            lines.append("ℹ️ <i>Не активен для данного аккаунта (расход списывается из общего недельного пула)</i>\n")
     else:
-        plan_name = cqs.plan_display_name or cqs.plan_type.capitalize() or "Plus"
-        status_icon = "🟢" if cqs.has_active_subscription else "⚪️"
-        status_text = "Активна" if cqs.has_active_subscription else "Неактивна"
-
-        lines.append(f"⚡️ <b>План:</b> ChatGPT <b>{html.escape(plan_name)}</b> {status_icon} <i>({status_text})</i>")
-
-        target_date = cqs.renews_at or cqs.expires_at
-        if target_date:
-            time_left_str = _format_time_left(target_date)
-            lines.append(f"▫️ <b>Следующее продление:</b> {time_left_str}")
-            if cqs.billing_currency:
-                lines.append(f"▫️ <b>Валюта подписки:</b> <code>{html.escape(cqs.billing_currency)}</code>")
-
-        lines.append(f"\n🤖 <b>Лимиты моделей подписки {html.escape(plan_name)}:</b>")
-        if cqs.plan_type.lower() in ("pro", "team", "enterprise"):
-            lines.append("▫️ <b>o3 / o1 / GPT-6 Astra:</b> Неограниченный доступ (High reasoning)")
-            lines.append("▫️ <b>GPT-6 Sol / GPT-5:</b> Без ограничений")
-            lines.append("▫️ <b>Advanced Voice Mode:</b> Включен (безлимитный аудио-стриминг)")
+        if cqs.plan_type.lower() in ("pro", "team", "enterprise") or cqs.unlimited_credits:
+            lines.append("▫️ <b>Неограниченный доступ (Unlimited tier):</b> скользящие лимиты сняты для данного аккаунта.\n")
         else:
-            lines.append("▫️ <b>o3 / o1 Reasoning:</b> ~50-100 запросов в неделю (скользящий лимит)")
-            lines.append("▫️ <b>o3-mini / o4-mini:</b> Высокая квота (~150 сообщений в день)")
-            lines.append("▫️ <b>GPT-6 Sol / GPT-5:</b> До 80 сообщений каждые 3 часа")
-            lines.append("▫️ <b>Advanced Voice Mode:</b> Включен (стандартная квота)")
+            lines.append("▫️ <b>Недельные лимиты (Weekly):</b> действуют для моделей с глубоким рассуждением (Reasoning / Astra).")
+            lines.append("▫️ <b>5-часовые скользящие окна:</b> применяются для основных моделей при повышенной нагрузке.")
+            lines.append("ℹ️ <i>Наличие 5-часовых и недельных окон зависит от тира подписки и программы доступа аккаунта.</i>\n")
 
-        if cqs.features_highlight:
-            feat_str = ", ".join(cqs.features_highlight)
-            lines.append(f"\n✨ <i>Включенные возможности: {html.escape(feat_str)}</i>")
+    if cqs.model_availability:
+        avail_lines = []
+        for mod_id, is_avail in cqs.model_availability.items():
+            st = "🟢 Доступна" if is_avail else "🔴 Лимит исчерпан"
+            avail_lines.append(f"<b>{html.escape(mod_id)}:</b> {st}")
+        if avail_lines:
+            lines.append("🤖 <b>Доступность моделей:</b> " + ", ".join(avail_lines))
+
+    if cqs.reset_credits_available > 0:
+        lines.append(f"🎟 <b>Сбросы лимита (Reset Credits):</b> {cqs.reset_credits_available} доступно")
+
+    if cqs.features_highlight:
+        feat_str = ", ".join(cqs.features_highlight)
+        lines.append(f"\n✨ <i>Включенные возможности: {html.escape(feat_str)}</i>")
 
     return "\n".join(lines).strip()
 

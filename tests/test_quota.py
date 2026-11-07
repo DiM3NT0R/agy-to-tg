@@ -283,6 +283,13 @@ def test_render_codex_limits_card_subscription() -> None:
         billing_currency="USD",
         will_renew=True,
         features_highlight=["o3", "gpt5", "canvas"],
+        primary_window={
+            "used_percent": 84,
+            "limit_window_seconds": 604800,
+            "reset_after_seconds": 340000,
+            "reset_at": 1794369744,
+        },
+        model_availability={"gpt-6-astra": True},
     )
     card = render_codex_limits_card(cqs)
     assert "Лимиты и подписка OpenAI Codex" in card
@@ -290,8 +297,39 @@ def test_render_codex_limits_card_subscription() -> None:
     assert "Plus" in card
     assert "Активна" in card
     assert "USD" in card
-    assert "o3 / o1 Reasoning" in card
+    assert "Недельный лимит" in card
+    assert "84%" in card
+    assert "16%" in card
+    assert "gpt-6-astra" in card
     assert "canvas" in card
+
+
+def test_render_codex_limits_card_with_5h_window() -> None:
+    from src.quota import CodexQuotaSummary, render_codex_limits_card
+
+    cqs = CodexQuotaSummary(
+        email="pro@user.com",
+        auth_mode="chatgpt",
+        plan_type="pro",
+        plan_display_name="Pro",
+        has_active_subscription=True,
+        primary_window={
+            "used_percent": 10,
+            "limit_window_seconds": 604800,
+            "reset_after_seconds": 340000,
+            "reset_at": 1794369744,
+        },
+        secondary_window={
+            "used_percent": 45,
+            "limit_window_seconds": 18000,
+            "reset_after_seconds": 9000,
+            "reset_at": 1794369744,
+        },
+    )
+    card = render_codex_limits_card(cqs)
+    assert "Недельный лимит" in card
+    assert "5-часовой скользящий лимит" in card
+    assert "45%" in card
 
 
 def test_render_codex_limits_card_api_key() -> None:

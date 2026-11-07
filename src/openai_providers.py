@@ -366,7 +366,11 @@ def update_provider_model(
     return save_provider(prov, make_active=prov.is_active, storage_path=storage_path)
 
 
-async def fetch_provider_models(provider: OpenAIProvider, timeout: float = 6.0) -> list[str]:
+async def fetch_provider_models(
+    provider: OpenAIProvider,
+    timeout: float = 6.0,
+    storage_path: Path | None = None,
+) -> list[str]:
     """Discover models from provider GET {base_url}/models."""
     url = f"{provider.base_url.rstrip('/')}/models"
     headers = {
@@ -393,5 +397,5 @@ async def fetch_provider_models(provider: OpenAIProvider, timeout: float = 6.0) 
 
     if models:
         provider.models = models
-        save_provider(provider, make_active=provider.is_active)
+        save_provider(provider, make_active=provider.is_active, storage_path=storage_path)
     return models

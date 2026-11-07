@@ -129,8 +129,9 @@ def test_update_provider_helpers(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_provider_models(tmp_path: Path) -> None:
+async def test_fetch_provider_models(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     storage = tmp_path / "providers.json"
+    monkeypatch.setattr("src.openai_providers._DEFAULT_STORAGE_PATH", storage)
     prov = OpenAIProvider(
         id="cheapai",
         name="CheapAI",
@@ -146,7 +147,7 @@ async def test_fetch_provider_models(tmp_path: Path) -> None:
     )
 
     with patch.object(httpx.AsyncClient, "get", return_value=mock_resp):
-        models = await fetch_provider_models(prov)
+        models = await fetch_provider_models(prov, storage_path=storage)
         assert models == ["gpt-4o", "claude-3-5-sonnet", "deepseek-chat"]
         assert prov.models == models
 
