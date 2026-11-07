@@ -96,3 +96,37 @@ async def test_update_command_reports_already_up_to_date(monkeypatch: pytest.Mon
     rep = await handle_text_command(msg, cs, cfg)
     assert rep is not None
     assert "abc1234" in rep.text
+
+
+def test_detect_git_remote_migrates_old_repo_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd == ["git", "remote", "-v"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="origin https://github.com/DiM3NT0R/agy-to-tg.git (fetch)\norigin https://github.com/DiM3NT0R/agy-to-tg.git (push)\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("src.updater.subprocess.run", fake_run)
+    rem = detect_git_remote(tmp_path)
+    assert rem == "origin"
+    # Verify migration command was executed
+    assert any("set-url" in cmd and any("agent-tg-bridge" in arg for arg in cmd) for cmd in calls)
+
+
+@pytest.mark.asyncio
+async def test_update_command_reports_diverged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.updater.check_and_pull_update", lambda: (False, "local1111111", "remote2222222"))
+    msg = InboundMessage(update_id=2, chat_id=10, user_id=42, message_id=2, text="/update")
+    cs = ChatState(chat_dir="/tmp/c")
+    cfg = Config(telegram=TelegramConfig(bot_token="t", allowed_user_ids=[42]), agy=AgyConfig())
+    rep = await handle_text_command(msg, cs, cfg)
+    assert rep is not None
+    assert "разошлась" in rep.text
+    assert "local11" in rep.text
+    assert "remote2" in rep.text

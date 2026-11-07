@@ -1811,11 +1811,25 @@ async def handle_text_command(
         if updated:
             asyncio.get_running_loop().call_later(1.5, trigger_service_restart)
             return BridgeReply(
-                f"✅ Обновление скачано (`{old_sha[:7]}` → `{new_sha[:7]}`). Перезапускаю сервис..."
+                f"✅ <b>Обновление скачано!</b> (<code>{old_sha[:7]}</code> → <code>{new_sha[:7]}</code>)\n"
+                "Сервис перезапускается..."
             )
-        if new_sha:
-            return BridgeReply(f"👌 Установлена актуальная версия (`{new_sha[:7]}`).")
-        return BridgeReply("⚠️ Не удалось проверить обновления в GitHub.")
+        if old_sha and new_sha:
+            if old_sha == new_sha:
+                return BridgeReply(f"👌 <b>Установлена актуальная версия</b> (<code>{new_sha[:7]}</code>).")
+            else:
+                return BridgeReply(
+                    f"⚠️ <b>Ветка на сервере разошлась с GitHub:</b>\n"
+                    f"• Локальный коммит: <code>{old_sha[:7]}</code>\n"
+                    f"• В GitHub: <code>{new_sha[:7]}</code>\n\n"
+                    "Для синхронизации выполните в терминале:\n"
+                    "<code>cd ~/.gemini/extensions/antigravity-telegram-bridge &amp;&amp; git fetch origin &amp;&amp; git reset --hard origin/main &amp;&amp; systemctl --user restart antigravity-telegram-bridge.service</code>"
+                )
+        return BridgeReply(
+            "⚠️ <b>Не удалось проверить обновления в GitHub.</b>\n\n"
+            "Проверьте адрес репозитория на сервере:\n"
+            "<code>cd ~/.gemini/extensions/antigravity-telegram-bridge &amp;&amp; git remote set-url origin https://github.com/DiM3NT0R/agent-tg-bridge.git &amp;&amp; git pull --ff-only</code>"
+        )
     return None
 
 
