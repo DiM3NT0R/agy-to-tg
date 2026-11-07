@@ -6,6 +6,7 @@ import html
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -606,7 +607,9 @@ async def _render_providers_card() -> BridgeReply:
             keyboard.append(row)
 
     # Action row
-    keyboard.append([{"text": "➕ Добавить URL / провайдер", "callback_data": "prov:add"}])
+    keyboard.append([
+        {"text": "🧙‍♂️ Настроить провайдер (по шагам)", "callback_data": "prov:wiz:start"},
+    ])
 
     edit_row: list[dict[str, Any]] = []
     if active_prov:
@@ -677,6 +680,262 @@ def _render_delete_providers_menu(provs: list[Any]) -> BridgeReply:
         keyboard.append([{"text": f"🗑 Удалить {lbl}", "callback_data": f"prov:delete:{p.id}"}])
     keyboard.append([{"text": "← Назад к провайдерам", "callback_data": "nav:providers"}])
     return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# Step-by-Step Provider Setup Wizard
+# ---------------------------------------------------------------------------
+_PROVIDER_WIZARDS: dict[tuple[int, int | None] | int, dict[str, Any]] = {}
+
+
+def get_provider_wizard(chat_id: int, thread_id: int | None = None) -> dict[str, Any] | None:
+    key = (chat_id, thread_id) if thread_id is not None else chat_id
+    wiz = _PROVIDER_WIZARDS.get(key)
+    if wiz is None and thread_id is not None:
+        wiz = _PROVIDER_WIZARDS.get(chat_id)
+    if wiz is not None:
+        if time.monotonic() - wiz.get("started_at", 0) > 600:
+            clear_provider_wizard(chat_id, thread_id)
+            return None
+    return wiz
+
+
+def set_provider_wizard(chat_id: int, thread_id: int | None, data: dict[str, Any]) -> None:
+    data["started_at"] = time.monotonic()
+    key = (chat_id, thread_id) if thread_id is not None else chat_id
+    _PROVIDER_WIZARDS[key] = data
+
+
+def clear_provider_wizard(chat_id: int, thread_id: int | None = None) -> None:
+    if thread_id is not None:
+        _PROVIDER_WIZARDS.pop((chat_id, thread_id), None)
+    _PROVIDER_WIZARDS.pop(chat_id, None)
+
+
+def _render_wizard_step_url(wiz: dict[str, Any]) -> BridgeReply:
+    lines = [
+        "🧙‍♂️ <b>Мастер настройки API (Шаг 1 из 3: Base URL)</b>\n",
+        "Укажите сетевой адрес OpenAI-совместимого эндпоинта.\n",
+        "👇 <b>Отправьте URL сообщением в чат</b> (любой адрес без ограничений):",
+        "• <code>https://api.cheapai.io/v1</code>",
+        "• <code>https://openrouter.ai/api/v1</code>",
+        "• <code>https://api.deepseek.com/v1</code>",
+        "• <code>http://127.0.0.1:11434/v1</code> (локальная Ollama)",
+        "• <code>http://127.0.0.1:8000/v1</code> (vLLM / LM Studio)\n",
+        "Или выберите готовый пресет кнопкой ниже:",
+    ]
+    keyboard = [
+        [
+            {"text": "⚡️ CheapAI (cheapai.io)", "callback_data": "prov:wiz:preset:cheapai"},
+            {"text": "⚡️ OpenRouter", "callback_data": "prov:wiz:preset:openrouter"},
+        ],
+        [
+            {"text": "⚡️ DeepSeek", "callback_data": "prov:wiz:preset:deepseek"},
+            {"text": "⚡️ Ollama (Local)", "callback_data": "prov:wiz:preset:ollama"},
+        ],
+        [
+            {"text": "⚡️ vLLM / LM Studio", "callback_data": "prov:wiz:preset:vllm"},
+            {"text": "⚡️ Groq Cloud", "callback_data": "prov:wiz:preset:groq"},
+        ],
+        [
+            {"text": "❌ Отмена", "callback_data": "prov:wiz:cancel"},
+            {"text": "📝 Ввести одной строкой", "callback_data": "prov:help_cmd"},
+        ],
+    ]
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+def _render_wizard_step_key(wiz: dict[str, Any]) -> BridgeReply:
+    url = wiz.get("url", "")
+    name = wiz.get("name", "Custom")
+    lines = [
+        "🧙‍♂️ <b>Мастер настройки API (Шаг 2 из 3: Ключ)</b>\n",
+        f"🌐 <b>Base URL:</b> <code>{html.escape(url)}</code>",
+        f"🏷 <b>Сервис:</b> <b>{html.escape(name)}</b>\n",
+        "🔑 <b>Отправьте API ключ (Bearer token) ответным сообщением в чат.</b>\n",
+        "<i>🔒 Безопасность: сообщение с ключом будет немедленно удалено ботом из чата.</i>",
+        "<i>ℹ️ Если ключ не нужен (например, для локальной Ollama/vLLM), нажмите кнопку «Пропустить».</i>",
+    ]
+    keyboard = [
+        [{"text": "⏭ Пропустить (без ключа)", "callback_data": "prov:wiz:skip_key"}],
+        [
+            {"text": "⬅️ Назад (к URL)", "callback_data": "prov:wiz:back:url"},
+            {"text": "❌ Отмена", "callback_data": "prov:wiz:cancel"},
+        ],
+    ]
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+def _render_wizard_step_model(wiz: dict[str, Any], page: int = 0) -> BridgeReply:
+    url = wiz.get("url", "")
+    name = wiz.get("name", "Custom")
+    masked_key = wiz.get("masked_key", "(нет ключа)")
+    models: list[str] = wiz.get("models", [])
+    default_sugg = wiz.get("default_model", "")
+
+    lines = [
+        "🧙‍♂️ <b>Мастер настройки API (Шаг 3 из 3: Модель)</b>\n",
+        f"🌐 <b>Base URL:</b> <code>{html.escape(url)}</code>",
+        f"🏷 <b>Сервис:</b> <b>{html.escape(name)}</b>",
+        f"🔑 <b>Ключ:</b> <code>{html.escape(masked_key)}</code>\n",
+    ]
+
+    if models:
+        lines.append(f"✅ <b>Связь установлена!</b> Обнаружено моделей: <b>{len(models)}</b>.\n")
+        lines.append("Выберите модель кнопкой или <b>отправьте её точное название сообщением</b>:")
+    else:
+        lines.append("ℹ️ <i>Автообнаружение через /models не вернуло список (или эндпоинт его не отдает).</i>\n")
+        lines.append("<b>Отправьте название модели сообщением в чат</b> (например: <code>gpt-4o</code>) или выберите вариант:")
+
+    keyboard: InlineKeyboard = []
+
+    # If preset has a suggested model, show it prominently at top
+    if default_sugg and (not models or default_sugg not in models[:6]):
+        keyboard.append([{"text": f"⭐️ {default_sugg} (рекомендуется)", "callback_data": f"prov:wiz:model:{default_sugg}"}])
+
+    page_size = 6
+    if models:
+        total_pages = (len(models) + page_size - 1) // page_size
+        page = max(0, min(page, total_pages - 1))
+        start_idx = page * page_size
+        page_models = models[start_idx : start_idx + page_size]
+
+        row: list[dict[str, Any]] = []
+        for i, m in enumerate(page_models):
+            global_idx = start_idx + i
+            lbl = m
+            if len(lbl) > 20:
+                lbl = lbl[:18] + ".."
+            row.append({"text": f"🤖 {lbl}", "callback_data": f"prov:wiz:m_idx:{global_idx}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        nav_row: list[dict[str, Any]] = []
+        if page > 0:
+            nav_row.append({"text": "⬅️ Назад", "callback_data": f"prov:wiz:page:{page - 1}"})
+        if total_pages > 1:
+            nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": "noop"})
+        if page < total_pages - 1:
+            nav_row.append({"text": "Вперед ➡️", "callback_data": f"prov:wiz:page:{page + 1}"})
+        if nav_row:
+            keyboard.append(nav_row)
+    else:
+        keyboard.append([
+            {"text": "⚡️ gpt-4o", "callback_data": "prov:wiz:model:gpt-4o"},
+            {"text": "⚡️ default", "callback_data": "prov:wiz:model:default"},
+        ])
+
+    keyboard.append([
+        {"text": "⬅️ Назад (к ключу)", "callback_data": "prov:wiz:back:key"},
+        {"text": "❌ Отмена", "callback_data": "prov:wiz:cancel"},
+    ])
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
+def _render_wizard_success(provider: Any) -> BridgeReply:
+    lines = [
+        "🎉 <b>Провайдер успешно настроен и активирован!</b>\n",
+        f"🏷 <b>Сервис:</b> <b>{html.escape(provider.name)}</b>",
+        f"🌐 <b>Base URL:</b> <code>{html.escape(provider.base_url)}</code>",
+        f"🔑 <b>API-ключ:</b> <code>{html.escape(provider.masked_key)}</code>",
+        f"🤖 <b>Модель по умолчанию:</b> <code>{html.escape(provider.default_model or 'default')}</code>",
+    ]
+    if provider.models:
+        lines.append(f"📚 <b>Всего моделей:</b> {len(provider.models)}")
+    lines.append("\nВсе последующие запросы к OpenAI-совместимому движку будут использовать этот сервер.")
+
+    keyboard = [
+        [
+            {"text": "🧪 Проверить связь", "callback_data": "prov:test"},
+            {"text": "🤖 Модели", "callback_data": "prov:models"},
+        ],
+        [
+            {"text": "🌐 Все провайдеры", "callback_data": "nav:providers"},
+            {"text": "⚙️ Настройки", "callback_data": "nav:settings"},
+        ],
+    ]
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard, toast="Провайдер активирован!")
+
+
+async def _handle_wizard_text_input(
+    msg: "InboundMessage",
+    wiz: dict[str, Any],
+    tg: Any = None,
+) -> BridgeReply:
+    from src.openai_providers import (
+        normalize_base_url,
+        derive_provider_from_url,
+        is_url_like,
+        fetch_provider_models,
+        save_provider,
+        OpenAIProvider,
+    )
+
+    step = wiz.get("step", "url")
+    user_text = msg.text.strip()
+    tid = getattr(msg, "message_thread_id", None)
+
+    if step == "url":
+        if not is_url_like(user_text) and not user_text.startswith(("http://", "https://")):
+            return BridgeReply(
+                "⚠️ <b>Это не похоже на валидный URL адрес.</b>\n\n"
+                "Пожалуйста, отправьте корректный адрес эндпоинта, например:\n"
+                "• <code>https://api.cheapai.io/v1</code>\n"
+                "• <code>https://openrouter.ai/api/v1</code>\n"
+                "• <code>http://127.0.0.1:11434/v1</code>\n\n"
+                "Или нажмите кнопку с шаблоном:",
+                keyboard=_render_wizard_step_url(wiz).keyboard,
+            )
+        norm_url = normalize_base_url(user_text)
+        slug, name = derive_provider_from_url(norm_url)
+        wiz["url"] = norm_url
+        wiz["id"] = slug
+        wiz["name"] = name
+        wiz["step"] = "key"
+        set_provider_wizard(msg.chat_id, tid, wiz)
+        return _render_wizard_step_key(wiz)
+
+    elif step == "key":
+        if tg and getattr(msg, "message_id", None):
+            try:
+                asyncio.create_task(tg.delete_message(msg.chat_id, msg.message_id))
+            except Exception:
+                pass
+
+        key = user_text
+        wiz["key"] = key
+        wiz["masked_key"] = f"{key[:4]}...{key[-4:]}" if len(key) > 8 else "***"
+        wiz["step"] = "model"
+
+        temp_prov = OpenAIProvider(
+            id=wiz.get("id", "custom"),
+            name=wiz.get("name", "Custom"),
+            base_url=wiz.get("url", ""),
+            api_key=key,
+        )
+        models = await fetch_provider_models(temp_prov, timeout=5.0)
+        wiz["models"] = models
+        set_provider_wizard(msg.chat_id, tid, wiz)
+        return _render_wizard_step_model(wiz)
+
+    elif step == "model":
+        model_name = user_text
+        final_prov = OpenAIProvider(
+            id=wiz.get("id", "custom"),
+            name=wiz.get("name", "Custom"),
+            base_url=wiz.get("url", ""),
+            api_key=wiz.get("key", ""),
+            default_model=model_name,
+            models=wiz.get("models", []),
+        )
+        saved = save_provider(final_prov, make_active=True)
+        clear_provider_wizard(msg.chat_id, tid)
+        return _render_wizard_success(saved)
+
+    return _render_wizard_step_url(wiz)
 
 
 async def _run_device_auth_flow(tg: Any, chat_id: int, message_id: int):
@@ -807,6 +1066,20 @@ async def handle_text_command(
         cmd = cmd.split("@", 1)[0]
     args = parts[1] if len(parts) > 1 else ""
 
+    tid = getattr(msg, "message_thread_id", None)
+    if cmd in ("/cancel", "/stop"):
+        if get_provider_wizard(msg.chat_id, tid):
+            clear_provider_wizard(msg.chat_id, tid)
+            return BridgeReply(
+                "❌ <b>Пошаговая настройка провайдера отменена.</b>",
+                keyboard=[[{"text": "🌐 К провайдерам", "callback_data": "nav:providers"}]],
+            )
+
+    if not cmd.startswith("/"):
+        wiz = get_provider_wizard(msg.chat_id, tid)
+        if wiz:
+            return await _handle_wizard_text_input(msg, wiz, tg)
+
     if cmd == "/start":
         return BridgeReply(WELCOME_TEXT)
     if cmd == "/help":
@@ -867,6 +1140,11 @@ async def handle_text_command(
         sub_parts = args.strip().split()
         sub = sub_parts[0].lower() if sub_parts else ""
 
+        if sub in ("wizard", "new"):
+            wiz = {"step": "url"}
+            set_provider_wizard(msg.chat_id, tid, wiz)
+            return _render_wizard_step_url(wiz)
+
         if sub == "add":
             if tg and getattr(msg, "message_id", None):
                 try:
@@ -876,7 +1154,9 @@ async def handle_text_command(
 
             rem_args = sub_parts[1:]
             if not rem_args:
-                return _render_add_provider_help()
+                wiz = {"step": "url"}
+                set_provider_wizard(msg.chat_id, tid, wiz)
+                return _render_wizard_step_url(wiz)
 
             from src.openai_providers import is_url_like, derive_provider_from_url
 
@@ -1381,10 +1661,95 @@ async def handle_callback(
         else:
             qs = await fetch_quota_summary()
             return BridgeReply(render_limits_card(qs), keyboard=_limits_keyboard("agy"), toast="Лимиты обновлены")
+    tid = getattr(cq, "message_thread_id", None)
     if data == "nav:providers":
+        clear_provider_wizard(cq.chat_id, tid)
         return await _render_providers_card()
-    if data == "prov:add":
+    if data in ("prov:add", "prov:wiz:start"):
+        wiz = {"step": "url"}
+        set_provider_wizard(cq.chat_id, tid, wiz)
+        return _render_wizard_step_url(wiz)
+    if data == "prov:help_cmd":
         return _render_add_provider_help()
+    if data.startswith("prov:wiz:preset:"):
+        preset_name = data.partition("prov:wiz:preset:")[2]
+        from src.openai_providers import PROVIDER_PRESETS
+        pre = PROVIDER_PRESETS.get(preset_name, {})
+        wiz = {
+            "step": "key",
+            "url": pre.get("base_url", ""),
+            "id": preset_name,
+            "name": pre.get("name", preset_name.capitalize()),
+            "default_model": pre.get("default_model", ""),
+        }
+        set_provider_wizard(cq.chat_id, tid, wiz)
+        return _render_wizard_step_key(wiz)
+    if data == "prov:wiz:skip_key":
+        wiz = get_provider_wizard(cq.chat_id, tid) or {}
+        wiz["key"] = ""
+        wiz["masked_key"] = "(нет ключа)"
+        wiz["step"] = "model"
+        from src.openai_providers import OpenAIProvider, fetch_provider_models
+        temp_prov = OpenAIProvider(
+            id=wiz.get("id", "custom"),
+            name=wiz.get("name", "Custom"),
+            base_url=wiz.get("url", ""),
+            api_key="",
+        )
+        models = await fetch_provider_models(temp_prov, timeout=5.0)
+        wiz["models"] = models
+        set_provider_wizard(cq.chat_id, tid, wiz)
+        return _render_wizard_step_model(wiz)
+    if data == "prov:wiz:back:url":
+        wiz = get_provider_wizard(cq.chat_id, tid) or {}
+        wiz["step"] = "url"
+        set_provider_wizard(cq.chat_id, tid, wiz)
+        return _render_wizard_step_url(wiz)
+    if data == "prov:wiz:back:key":
+        wiz = get_provider_wizard(cq.chat_id, tid) or {}
+        wiz["step"] = "key"
+        set_provider_wizard(cq.chat_id, tid, wiz)
+        return _render_wizard_step_key(wiz)
+    if data.startswith("prov:wiz:page:"):
+        page_num = int(data.partition("prov:wiz:page:")[2])
+        wiz = get_provider_wizard(cq.chat_id, tid) or {}
+        return _render_wizard_step_model(wiz, page=page_num)
+    if data.startswith("prov:wiz:m_idx:"):
+        idx = int(data.partition("prov:wiz:m_idx:")[2])
+        wiz = get_provider_wizard(cq.chat_id, tid) or {}
+        models = wiz.get("models", [])
+        m_name = models[idx] if idx < len(models) else "default"
+        from src.openai_providers import OpenAIProvider, save_provider
+        final_prov = OpenAIProvider(
+            id=wiz.get("id", "custom"),
+            name=wiz.get("name", "Custom"),
+            base_url=wiz.get("url", "https://api.cheapai.io/v1"),
+            api_key=wiz.get("key", ""),
+            default_model=m_name,
+            models=models,
+        )
+        saved = save_provider(final_prov, make_active=True)
+        clear_provider_wizard(cq.chat_id, tid)
+        return _render_wizard_success(saved)
+    if data.startswith("prov:wiz:model:"):
+        m_name = data.partition("prov:wiz:model:")[2]
+        wiz = get_provider_wizard(cq.chat_id, tid) or {}
+        from src.openai_providers import OpenAIProvider, save_provider
+        final_prov = OpenAIProvider(
+            id=wiz.get("id", "custom"),
+            name=wiz.get("name", "Custom"),
+            base_url=wiz.get("url", "https://api.cheapai.io/v1"),
+            api_key=wiz.get("key", ""),
+            default_model=m_name,
+            models=wiz.get("models", []),
+        )
+        saved = save_provider(final_prov, make_active=True)
+        clear_provider_wizard(cq.chat_id, tid)
+        return _render_wizard_success(saved)
+    if data in ("prov:wiz:cancel", "prov:cancel"):
+        clear_provider_wizard(cq.chat_id, tid)
+        rep = await _render_providers_card()
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast="Настройка отменена")
     if data == "prov:edit_url":
         from src.openai_providers import get_active_provider
         p = get_active_provider()

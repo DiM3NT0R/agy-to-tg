@@ -253,3 +253,154 @@ async def test_provider_slash_commands(tmp_path: Path, monkeypatch: pytest.Monke
     assert reply_eng is not None
     assert "OPENAI" in reply_eng.text
     assert cs.engine == "openai"
+
+
+@pytest.mark.asyncio
+async def test_provider_step_by_step_wizard_text_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = tmp_path / "providers.json"
+    monkeypatch.setattr("src.openai_providers._DEFAULT_STORAGE_PATH", storage)
+
+    from src.commands import (
+        handle_text_command,
+        clear_provider_wizard,
+    )
+    from src.telegram import InboundMessage
+    from src.state import ChatState
+    from src.config import Config, TelegramConfig, AgyConfig
+
+    cfg = Config(telegram=TelegramConfig("tok", [1]), agy=AgyConfig("/tmp", "gemini-4-argon-low", "code"))
+    cs = ChatState(chat_dir=str(tmp_path))
+    clear_provider_wizard(10)
+
+    # Step 0: Start wizard via /provider wizard or /provider add
+    m0 = InboundMessage(1, 10, 1, 1, "/provider add")
+    r0 = await handle_text_command(m0, cs, cfg)
+    assert r0 is not None
+    assert "Шаг 1 из 3: Base URL" in r0.text
+
+    # Step 1: Send URL text
+    m1 = InboundMessage(2, 10, 1, 2, "https://api.cheapai.io/v1")
+    r1 = await handle_text_command(m1, cs, cfg)
+    assert r1 is not None
+    assert "Шаг 2 из 3: Ключ" in r1.text
+    assert "https://api.cheapai.io/v1" in r1.text
+
+    # Step 2: Send API key
+    mock_resp = httpx.Response(
+        200,
+        json={"data": [{"id": "gpt-4o"}, {"id": "claude-3-7-sonnet"}]},
+        request=httpx.Request("GET", "https://api.cheapai.io/v1/models"),
+    )
+    with patch.object(httpx.AsyncClient, "get", return_value=mock_resp):
+        m2 = InboundMessage(3, 10, 1, 3, "sk-secret-test-key-12345")
+        r2 = await handle_text_command(m2, cs, cfg)
+        assert r2 is not None
+        assert "Шаг 3 из 3: Модель" in r2.text
+        assert "Связь установлена" in r2.text
+
+    # Step 3: Send Model name
+    m3 = InboundMessage(4, 10, 1, 4, "claude-3-7-sonnet")
+    r3 = await handle_text_command(m3, cs, cfg)
+    assert r3 is not None
+    assert "Провайдер успешно настроен и активирован" in r3.text
+    assert "claude-3-7-sonnet" in r3.text
+
+    # Verify saved provider in storage
+    active = get_active_provider(storage)
+    assert active is not None
+    assert active.id == "cheapai"
+    assert active.base_url == "https://api.cheapai.io/v1"
+    assert active.api_key == "sk-secret-test-key-12345"
+    assert active.default_model == "claude-3-7-sonnet"
+
+
+@pytest.mark.asyncio
+async def test_provider_step_by_step_wizard_callback_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = tmp_path / "providers.json"
+    monkeypatch.setattr("src.openai_providers._DEFAULT_STORAGE_PATH", storage)
+
+    from src.commands import (
+        handle_callback,
+        clear_provider_wizard,
+    )
+    from src.telegram import CallbackQuery
+    from src.state import ChatState
+    from src.config import Config, TelegramConfig, AgyConfig
+
+    cfg = Config(telegram=TelegramConfig("tok", [1]), agy=AgyConfig("/tmp", "gemini-4-argon-low", "code"))
+    cs = ChatState(chat_dir=str(tmp_path))
+    clear_provider_wizard(10)
+
+    # Step 1: Click start wizard
+    cq0 = CallbackQuery(update_id=1, callback_query_id="q0", chat_id=10, user_id=1, message_id=1, data="prov:wiz:start")
+    r0 = await handle_callback(cq0, cs, cfg)
+    assert "Шаг 1 из 3: Base URL" in r0.text
+
+    # Step 2: Choose preset cheapai
+    cq1 = CallbackQuery(update_id=2, callback_query_id="q1", chat_id=10, user_id=1, message_id=1, data="prov:wiz:preset:cheapai")
+    r1 = await handle_callback(cq1, cs, cfg)
+    assert "Шаг 2 из 3: Ключ" in r1.text
+    assert "CheapAI" in r1.text
+
+    # Step 3: Skip key
+    cq2 = CallbackQuery(update_id=3, callback_query_id="q2", chat_id=10, user_id=1, message_id=1, data="prov:wiz:skip_key")
+    r2 = await handle_callback(cq2, cs, cfg)
+    assert "Шаг 3 из 3: Модель" in r2.text
+
+    # Step 4: Click model choice
+    cq3 = CallbackQuery(update_id=4, callback_query_id="q3", chat_id=10, user_id=1, message_id=1, data="prov:wiz:model:gpt-4o")
+    r3 = await handle_callback(cq3, cs, cfg)
+    assert "Провайдер успешно настроен и активирован" in r3.text
+
+    active = get_active_provider(storage)
+    assert active is not None
+    assert active.id == "cheapai"
+    assert active.default_model == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_provider_wizard_cancel_and_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = tmp_path / "providers.json"
+    monkeypatch.setattr("src.openai_providers._DEFAULT_STORAGE_PATH", storage)
+
+    from src.commands import (
+        handle_text_command,
+        handle_callback,
+        clear_provider_wizard,
+    )
+    from src.telegram import InboundMessage, CallbackQuery
+    from src.state import ChatState
+    from src.config import Config, TelegramConfig, AgyConfig
+
+    cfg = Config(telegram=TelegramConfig("tok", [1]), agy=AgyConfig("/tmp", "gemini-4-argon-low", "code"))
+    cs = ChatState(chat_dir=str(tmp_path))
+    clear_provider_wizard(10)
+
+    # Start wizard
+    cq0 = CallbackQuery(update_id=1, callback_query_id="q0", chat_id=10, user_id=1, message_id=1, data="prov:wiz:start")
+    r0 = await handle_callback(cq0, cs, cfg)
+    assert "Шаг 1 из 3: Base URL" in r0.text
+
+    # Invalid URL rejected gracefully
+    m_inv = InboundMessage(2, 10, 1, 2, "not a url at all")
+    r_inv = await handle_text_command(m_inv, cs, cfg)
+    assert r_inv is not None
+    assert "не похоже на валидный URL" in r_inv.text
+
+    # Back to URL from Step 2
+    cq_pre = CallbackQuery(update_id=3, callback_query_id="q1", chat_id=10, user_id=1, message_id=1, data="prov:wiz:preset:cheapai")
+    await handle_callback(cq_pre, cs, cfg)
+    cq_back = CallbackQuery(update_id=4, callback_query_id="q2", chat_id=10, user_id=1, message_id=1, data="prov:wiz:back:url")
+    r_back = await handle_callback(cq_back, cs, cfg)
+    assert "Шаг 1 из 3: Base URL" in r_back.text
+
+    # Cancel via /cancel
+    m_cancel = InboundMessage(5, 10, 1, 5, "/cancel")
+    r_cancel = await handle_text_command(m_cancel, cs, cfg)
+    assert r_cancel is not None
+    assert "отменена" in r_cancel.text
+
+    # Normal message now treated normally (returns None for agent turn)
+    m_norm = InboundMessage(6, 10, 1, 6, "Hello world")
+    r_norm = await handle_text_command(m_norm, cs, cfg)
+    assert r_norm is None
