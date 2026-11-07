@@ -573,6 +573,40 @@ async def _fetch_updates(tg: _TelegramLike, offset: int) -> list[dict[str, Any]]
         return []
 
 
+async def _accounts_keepalive_loop(stop_event: asyncio.Event, agy_path: str = "") -> None:
+    """Perpetually keep all saved Codex and Antigravity authorization tokens alive."""
+    # Short delay on startup (5s) so daemon initial polling connects first
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop_event.is_set():
+        try:
+            from src.codex_accounts import refresh_all_codex_accounts
+            res = await refresh_all_codex_accounts(max_age_seconds=6 * 3600)
+            if res:
+                LOG.info("Codex accounts keepalive: checked %d accounts: %s", len(res), res)
+        except Exception as exc:
+            LOG.warning("Codex accounts keepalive error: %s", exc)
+
+        try:
+            from src.quota import is_token_expired_or_missing, _refresh_token_via_cli
+            if is_token_expired_or_missing():
+                LOG.info("Antigravity token is expired or missing, refreshing via CLI...")
+                await _refresh_token_via_cli(agy_path)
+        except Exception as exc:
+            LOG.warning("Antigravity token keepalive error: %s", exc)
+
+        # Sleep for 2 hours or until stop_event is set
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=7200.0)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run(
     *, cfg: Config, state_path: Path, chats_root: Path,
     tg: _TelegramLike, agy_path: str, info: DaemonInfo,
@@ -585,6 +619,7 @@ async def run(
     state = load_state(state_path, chats_root)
     tick = 0
     running_turn_tasks: set[asyncio.Task] = set()
+    keepalive_task = asyncio.create_task(_accounts_keepalive_loop(stop_event, agy_path=agy_path))
     async with tg:
         while not stop_event.is_set():
             tick += 1
@@ -701,6 +736,11 @@ async def run(
                 for pt in pending:
                     pt.cancel()
         save_state(state_path, state)
+    keepalive_task.cancel()
+    try:
+        await keepalive_task
+    except asyncio.CancelledError:
+        pass
 
 
 # Aliases to avoid name collisions in the loop above

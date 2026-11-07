@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -325,20 +326,47 @@ def _write_active_auth_file(auth_data: dict[str, Any], active_path: Path) -> Non
             pass
 
 
-async def refresh_active_codex_tokens(
-    timeout: float = 8.0,
-    auth_path: Path | None = None,
+def is_token_stale(auth_data: dict[str, Any], max_age_seconds: float = 8 * 3600) -> bool:
+    """Check if token is expired, expiring soon (within 30 mins), or older than max_age_seconds."""
+    tokens = auth_data.get("tokens") or {}
+    acc_tok = str(tokens.get("access_token") or "")
+    if not acc_tok:
+        return True
+
+    claims = extract_jwt_claims(acc_tok)
+    exp = claims.get("exp")
+    if exp:
+        # Expired or expiring within 30 minutes (1800s)
+        if time.time() > (exp - 1800):
+            return True
+
+    # Check last_refresh timestamp
+    last_ref = auth_data.get("last_refresh")
+    if last_ref:
+        try:
+            dt = datetime.fromisoformat(last_ref.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - dt).total_seconds()
+            if age > max_age_seconds:
+                return True
+        except Exception:
+            return True
+    else:
+        return True
+
+    return False
+
+
+async def refresh_account_tokens(
+    acc: CodexAccount,
     accounts_dir: Path | None = None,
+    auth_path: Path | None = None,
+    timeout: float = 8.0,
 ) -> tuple[bool, str, dict[str, Any] | None]:
-    """Attempt to refresh active Codex account OAuth tokens using refresh_token.
+    """Refresh OAuth tokens for a specific CodexAccount (active or inactive) via refresh_token.
 
-    Returns (success, error_or_info_message, updated_auth_data).
+    Handles Auth0 Refresh Token Rotation: updates account file and active auth.json if active.
     """
-    path = auth_path or get_active_auth_path()
-    auth_data = read_active_auth_data(path)
-    if not auth_data:
-        return False, "Codex не авторизован", None
-
+    auth_data = acc.auth_data or {}
     tokens = auth_data.get("tokens") or {}
     rt = str(tokens.get("refresh_token") or "")
     if not rt:
@@ -367,25 +395,19 @@ async def refresh_active_codex_tokens(
                 new_auth_data["tokens"] = new_tokens
                 new_auth_data["last_refresh"] = datetime.now(timezone.utc).isoformat()
 
-                # Persist to active auth.json
-                path.write_text(json.dumps(new_auth_data, indent=2), encoding="utf-8")
-                try:
-                    os.chmod(path, 0o600)
-                except OSError:
-                    pass
+                # Update in-memory account
+                acc.auth_data = new_auth_data
+                acc.last_used_at = datetime.now(timezone.utc).isoformat()
 
-                # Also update corresponding saved account file
+                # Persist to saved account file
                 adir = get_accounts_dir(accounts_dir)
-                for f in adir.glob("*.json"):
-                    try:
-                        raw = json.loads(f.read_text(encoding="utf-8"))
-                        if _is_same_account(raw.get("auth_data", {}), new_auth_data):
-                            raw["auth_data"] = new_auth_data
-                            raw["last_used_at"] = datetime.now(timezone.utc).isoformat()
-                            f.write_text(json.dumps(raw, indent=2), encoding="utf-8")
-                            break
-                    except Exception:
-                        pass
+                _write_account_file(acc, adir)
+
+                # If this account is currently active, update active auth.json as well
+                active_path = auth_path or get_active_auth_path()
+                active_data = read_active_auth_data(active_path)
+                if active_data and _is_same_account(active_data, new_auth_data):
+                    _write_active_auth_file(new_auth_data, active_path)
 
                 return True, "Токены успешно обновлены", new_auth_data
             else:
@@ -399,6 +421,71 @@ async def refresh_active_codex_tokens(
                 return False, f"Ошибка обновления ({err_code}): {err_msg}", None
     except Exception as exc:
         return False, f"Ошибка сети при обновлении токена: {exc}", None
+
+
+async def refresh_active_codex_tokens(
+    timeout: float = 8.0,
+    auth_path: Path | None = None,
+    accounts_dir: Path | None = None,
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """Attempt to refresh active Codex account OAuth tokens."""
+    active_path = auth_path or get_active_auth_path()
+    active_data = read_active_auth_data(active_path)
+    if not active_data:
+        return False, "Codex не авторизован", None
+
+    accounts = load_saved_accounts(accounts_dir=accounts_dir, auth_path=active_path)
+    for a in accounts:
+        if a.is_active:
+            return await refresh_account_tokens(a, accounts_dir=accounts_dir, auth_path=active_path, timeout=timeout)
+
+    # Fallback if no matching saved account found
+    meta = parse_auth_data(active_data)
+    dummy_acc = CodexAccount(
+        id=meta["id"],
+        label=meta["label"],
+        email=meta["email"],
+        account_id=meta["account_id"],
+        auth_mode=meta["auth_mode"],
+        auth_data=active_data,
+        is_active=True,
+    )
+    return await refresh_account_tokens(dummy_acc, accounts_dir=accounts_dir, auth_path=active_path, timeout=timeout)
+
+
+async def refresh_all_codex_accounts(
+    max_age_seconds: float = 6 * 3600,
+    force: bool = False,
+    accounts_dir: Path | None = None,
+    auth_path: Path | None = None,
+) -> dict[str, tuple[bool, str]]:
+    """Refresh tokens for ALL saved Codex accounts that are stale or expiring.
+
+    Keeps both active and background accounts permanently alive.
+    """
+    accounts = load_saved_accounts(accounts_dir=accounts_dir, auth_path=auth_path)
+    results: dict[str, tuple[bool, str]] = {}
+
+    for acc in accounts:
+        if acc.auth_mode != "chatgpt":
+            continue
+        tokens = (acc.auth_data or {}).get("tokens") or {}
+        if not tokens.get("refresh_token"):
+            continue
+
+        key = acc.email or acc.id
+        if force or is_token_stale(acc.auth_data or {}, max_age_seconds=max_age_seconds):
+            LOG.info("Refreshing Codex account %s (%s)...", key, acc.label)
+            ok, msg, _ = await refresh_account_tokens(acc, accounts_dir=accounts_dir, auth_path=auth_path)
+            results[key] = (ok, msg)
+            if ok:
+                LOG.info("Keepalive refresh succeeded for %s", key)
+            else:
+                LOG.warning("Keepalive refresh failed for %s: %s", key, msg)
+        else:
+            results[key] = (True, "Токен свежий (обновление не требуется)")
+
+    return results
 
 
 def switch_account(

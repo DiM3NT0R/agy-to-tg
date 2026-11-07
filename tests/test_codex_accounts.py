@@ -265,3 +265,64 @@ async def test_callback_account_switch(fake_env, monkeypatch):
     assert "Переключено" in reply.toast or "second@test.com" in reply.toast
     active = read_active_auth_data(auth_file)
     assert parse_auth_data(active)["email"] == "second@test.com"
+
+
+@pytest.mark.asyncio
+async def test_refresh_account_tokens_and_keepalive(fake_env, monkeypatch):
+    import httpx
+    from src.codex_accounts import (
+        is_token_stale,
+        refresh_account_tokens,
+        refresh_all_codex_accounts,
+    )
+
+    codex_home, accounts_dir, auth_file = fake_env
+    monkeypatch.setattr("src.codex_accounts.get_accounts_dir", lambda *_: accounts_dir)
+    monkeypatch.setattr("src.codex_accounts.get_active_auth_path", lambda *_: auth_file)
+
+    # 1. Test is_token_stale
+    stale_auth = {
+        "tokens": {"access_token": _make_dummy_jwt({"exp": 1000})},
+        "last_refresh": "2020-01-01T00:00:00Z",
+    }
+    assert is_token_stale(stale_auth) is True
+
+    fresh_auth = {
+        "tokens": {"access_token": _make_dummy_jwt({"exp": 9999999999})},
+        "last_refresh": "2099-01-01T00:00:00Z",
+    }
+    assert is_token_stale(fresh_auth) is False
+
+    # 2. Test refresh_account_tokens rotation
+    token_old = _make_dummy_jwt({"email": "keepalive@test.com"})
+    acc = save_account_data(
+        {"auth_mode": "chatgpt", "tokens": {"id_token": token_old, "refresh_token": "rt-old-123"}},
+        accounts_dir=accounts_dir,
+        auth_path=auth_file,
+        make_active=True,
+    )
+
+    new_jwt = _make_dummy_jwt({"email": "keepalive@test.com"})
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "access_token": "new-acc-tok",
+            "refresh_token": "rt-rotated-456",
+            "id_token": new_jwt,
+        },
+        request=httpx.Request("POST", "https://auth.openai.com/oauth/token"),
+    )
+
+    with patch("httpx.AsyncClient.post", return_value=mock_resp):
+        ok, msg, updated = await refresh_account_tokens(acc, accounts_dir=accounts_dir, auth_path=auth_file)
+        assert ok is True
+        assert updated["tokens"]["refresh_token"] == "rt-rotated-456"
+
+        # Check saved file has rotated token
+        reloaded = load_saved_accounts(accounts_dir=accounts_dir, auth_path=auth_file)
+        assert reloaded[0].auth_data["tokens"]["refresh_token"] == "rt-rotated-456"
+
+        # 3. Test refresh_all_codex_accounts
+        res = await refresh_all_codex_accounts(force=True, accounts_dir=accounts_dir, auth_path=auth_file)
+        assert len(res) == 1
+        assert list(res.values())[0][0] is True

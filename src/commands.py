@@ -571,8 +571,10 @@ async def _render_auth_card() -> BridgeReply:
     keyboard.append(action_row)
 
     manage_row: list[dict[str, Any]] = []
+    if len(saved_accs) > 0:
+        manage_row.append({"text": "🔄 Продлить сессии", "callback_data": "acc:refresh_all"})
     if len(saved_accs) > 1:
-        manage_row.append({"text": "🗑 Удалить аккаунт", "callback_data": "acc:del_menu"})
+        manage_row.append({"text": "🗑 Удалить", "callback_data": "acc:del_menu"})
     if codex_ok:
         manage_row.append({"text": "🚪 Выйти", "callback_data": "acc:logout"})
     if manage_row:
@@ -1626,14 +1628,27 @@ async def handle_callback(
         )
     if data.startswith("acc:switch:"):
         acc_id = data.partition("acc:switch:")[2]
-        from src.codex_accounts import switch_account
+        from src.codex_accounts import switch_account, is_token_stale, refresh_active_codex_tokens
         ok, msg, acc = switch_account(acc_id)
+        if ok and acc and acc.auth_mode == "chatgpt":
+            if is_token_stale(acc.auth_data or {}):
+                ref_ok, ref_msg, _ = await refresh_active_codex_tokens()
+                if ref_ok:
+                    msg = f"{msg} (токены обновлены)"
         rep = await _render_auth_card()
         return BridgeReply(
             text=rep.text,
             keyboard=rep.keyboard,
             toast=msg if ok else f"Ошибка: {msg}",
         )
+    if data == "acc:refresh_all":
+        from src.codex_accounts import refresh_all_codex_accounts
+        res = await refresh_all_codex_accounts(force=True)
+        ok_count = sum(1 for ok, _ in res.values() if ok)
+        total = len(res)
+        rep = await _render_auth_card()
+        toast = f"Обновлено {ok_count} из {total} аккаунтов" if total else "Нет аккаунтов для обновления"
+        return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
     if data == "acc:del_menu":
         from src.codex_accounts import load_saved_accounts
         accs = load_saved_accounts()
