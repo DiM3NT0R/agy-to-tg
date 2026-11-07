@@ -378,9 +378,75 @@ async def test_fetch_codex_limits_live(monkeypatch: pytest.MonkeyPatch) -> None:
             "account_id": "acc-123",
         },
     }
-    monkeypatch.setattr("src.codex_accounts.read_active_auth_data", lambda: fake_auth)
+    monkeypatch.setattr("src.codex_accounts.read_active_auth_data", lambda *args, **kwargs: fake_auth)
+
+    async def mock_get(self, url, *args, **kwargs):
+        url_str = str(url)
+        if "accounts/check" in url_str:
+            return httpx.Response(
+                200,
+                json={
+                    "accounts": {
+                        "acc-123": {
+                            "account": {"plan_type": "plus", "plan_display_name": "ChatGPT Plus"},
+                            "entitlement": {
+                                "has_active_subscription": True,
+                                "renews_at": "2026-12-04T04:02:15+00:00",
+                                "billing_currency": "USD",
+                            },
+                            "features": ["o3", "canvas"],
+                        }
+                    }
+                },
+                request=httpx.Request("GET", url_str),
+            )
+        elif "wham/usage" in url_str:
+            return httpx.Response(
+                200,
+                json={
+                    "rate_limit": {
+                        "allowed": True,
+                        "primary_window": {
+                            "used_percent": 15,
+                            "limit_window_seconds": 604800,
+                            "reset_at": 1794369744,
+                        },
+                    },
+                    "model_usage": {"gpt-6-astra": {"available": True}},
+                },
+                request=httpx.Request("GET", url_str),
+            )
+        return httpx.Response(404, request=httpx.Request("GET", url_str))
+
+    monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
 
     cqs = await fetch_codex_limits()
     assert cqs.email == "user@example.com"
     assert cqs.plan_type == "plus"
     assert cqs.has_active_subscription is True
+    assert cqs.primary_window is not None
+    assert cqs.primary_window["used_percent"] == 15
+
+
+@pytest.mark.asyncio
+async def test_fetch_codex_limits_unauthorized(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.quota import fetch_codex_limits
+
+    fake_auth = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "id_token": "a.eyJlbWFpbCI6ICJ1c2VyQGV4YW1wbGUuY29tIn0=.c",
+            "access_token": "expired_tok",
+            "refresh_token": "revoked_rt",
+        },
+    }
+    monkeypatch.setattr("src.codex_accounts.read_active_auth_data", lambda *args, **kwargs: fake_auth)
+
+    async def mock_get(self, url, *args, **kwargs):
+        return httpx.Response(401, json={"error": {"code": "token_revoked"}}, request=httpx.Request("GET", str(url)))
+
+    monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+    monkeypatch.setattr("src.codex_accounts.refresh_active_codex_tokens", AsyncMock(return_value=(False, "token_revoked", None)))
+
+    cqs = await fetch_codex_limits()
+    assert "Сессия истекла или отозвана" in cqs.error

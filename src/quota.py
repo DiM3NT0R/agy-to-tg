@@ -538,6 +538,51 @@ async def fetch_codex_limits(timeout: float = 6.0) -> CodexQuotaSummary:
             )
             resp_acc, resp_usage = await asyncio.gather(resp_acc_task, resp_usage_task, return_exceptions=True)
 
+            # If request returned 401 Unauthorized, attempt automatic OAuth token refresh
+            is_unauthorized = (
+                (isinstance(resp_acc, httpx.Response) and resp_acc.status_code == 401)
+                or (isinstance(resp_usage, httpx.Response) and resp_usage.status_code == 401)
+            )
+
+            if is_unauthorized:
+                LOG.info("Codex API returned 401 Unauthorized, attempting OAuth token refresh...")
+                try:
+                    from src.codex_accounts import refresh_active_codex_tokens
+                    ok, refresh_msg, updated_auth = await refresh_active_codex_tokens(timeout=timeout)
+                    if ok and updated_auth:
+                        new_tok = (updated_auth.get("tokens") or {}).get("access_token")
+                        if new_tok:
+                            headers["Authorization"] = f"Bearer {new_tok}"
+                            resp_acc_task = client.get(
+                                "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+                                headers=headers,
+                            )
+                            resp_usage_task = client.get(
+                                "https://chatgpt.com/backend-api/wham/usage",
+                                headers=headers,
+                            )
+                            resp_acc, resp_usage = await asyncio.gather(resp_acc_task, resp_usage_task, return_exceptions=True)
+                    else:
+                        return CodexQuotaSummary(
+                            email=email,
+                            auth_mode="chatgpt",
+                            account_id=account_id,
+                            error=f"Сессия истекла или отозвана OpenAI ({refresh_msg}). Выполните повторный вход через /auth codex или выберите другой аккаунт в /account.",
+                        )
+                except Exception as exc:
+                    LOG.warning("Failed refreshing token: %s", exc)
+
+            if (
+                (isinstance(resp_acc, httpx.Response) and resp_acc.status_code == 401)
+                or (isinstance(resp_usage, httpx.Response) and resp_usage.status_code == 401)
+            ):
+                return CodexQuotaSummary(
+                    email=email,
+                    auth_mode="chatgpt",
+                    account_id=account_id,
+                    error="Сессия истекла или отозвана OpenAI (token_revoked). Выполните повторный вход через /auth codex или переключите аккаунт в /account.",
+                )
+
             acc_plan = baseline_plan
             acc_display = baseline_plan.capitalize()
             has_sub = bool(baseline_until)
@@ -626,7 +671,12 @@ async def fetch_codex_limits(timeout: float = 6.0) -> CodexQuotaSummary:
 def render_codex_limits_card(cqs: CodexQuotaSummary) -> str:
     """Format CodexQuotaSummary into Telegram HTML message."""
     if cqs.error:
-        return f"⚠️ <b>Проверка лимитов OpenAI Codex:</b>\n{html.escape(cqs.error)}"
+        lines = ["📊 <b>Лимиты и подписка OpenAI Codex</b>"]
+        if cqs.email:
+            lines.append(f"👤 Аккаунт: <code>{html.escape(cqs.email)}</code>")
+        lines.append("───────────────")
+        lines.append(f"⚠️ <b>Статус сессии:</b>\n{html.escape(cqs.error)}")
+        return "\n".join(lines).strip()
 
     lines = ["📊 <b>Лимиты и подписка OpenAI Codex</b>"]
     if cqs.email:

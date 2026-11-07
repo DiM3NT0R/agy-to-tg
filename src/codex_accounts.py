@@ -23,10 +23,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 LOG = logging.getLogger("antigravity_telegram_bridge")
 
 _DEFAULT_ACCOUNTS_DIR = Path.home() / ".antigravity" / "bridge" / "codex_accounts"
 _DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CODEX_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 
 
 @dataclass
@@ -319,6 +323,82 @@ def _write_active_auth_file(auth_data: dict[str, Any], active_path: Path) -> Non
             lock.unlink()
         except OSError:
             pass
+
+
+async def refresh_active_codex_tokens(
+    timeout: float = 8.0,
+    auth_path: Path | None = None,
+    accounts_dir: Path | None = None,
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """Attempt to refresh active Codex account OAuth tokens using refresh_token.
+
+    Returns (success, error_or_info_message, updated_auth_data).
+    """
+    path = auth_path or get_active_auth_path()
+    auth_data = read_active_auth_data(path)
+    if not auth_data:
+        return False, "Codex не авторизован", None
+
+    tokens = auth_data.get("tokens") or {}
+    rt = str(tokens.get("refresh_token") or "")
+    if not rt:
+        return False, "Refresh-токен отсутствует", None
+
+    payload = {
+        "client_id": CODEX_CLIENT_ID,
+        "grant_type": "refresh_token",
+        "refresh_token": rt,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(CODEX_TOKEN_ENDPOINT, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                new_tokens = dict(tokens)
+                if data.get("access_token"):
+                    new_tokens["access_token"] = data["access_token"]
+                if data.get("refresh_token"):
+                    new_tokens["refresh_token"] = data["refresh_token"]
+                if data.get("id_token"):
+                    new_tokens["id_token"] = data["id_token"]
+
+                new_auth_data = dict(auth_data)
+                new_auth_data["tokens"] = new_tokens
+                new_auth_data["last_refresh"] = datetime.now(timezone.utc).isoformat()
+
+                # Persist to active auth.json
+                path.write_text(json.dumps(new_auth_data, indent=2), encoding="utf-8")
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+
+                # Also update corresponding saved account file
+                adir = get_accounts_dir(accounts_dir)
+                for f in adir.glob("*.json"):
+                    try:
+                        raw = json.loads(f.read_text(encoding="utf-8"))
+                        if _is_same_account(raw.get("auth_data", {}), new_auth_data):
+                            raw["auth_data"] = new_auth_data
+                            raw["last_used_at"] = datetime.now(timezone.utc).isoformat()
+                            f.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+                            break
+                    except Exception:
+                        pass
+
+                return True, "Токены успешно обновлены", new_auth_data
+            else:
+                try:
+                    err_data = resp.json()
+                    err_code = err_data.get("error", {}).get("code") or resp.status_code
+                    err_msg = err_data.get("error", {}).get("message") or resp.text
+                except Exception:
+                    err_code = resp.status_code
+                    err_msg = resp.text
+                return False, f"Ошибка обновления ({err_code}): {err_msg}", None
+    except Exception as exc:
+        return False, f"Ошибка сети при обновлении токена: {exc}", None
 
 
 def switch_account(
