@@ -614,7 +614,7 @@ async def _render_providers_card() -> BridgeReply:
 
     lines = [
         "🌐 <b>OpenAI-совместимые API провайдеры</b>\n",
-        "Универсальное подключение любого стороннего API или локального сервера (CheapAI, OpenRouter, DeepSeek, Groq, Ollama, vLLM).\n",
+        "Универсальное подключение любого стороннего API или локального сервера (OpenRouter, DeepSeek, Groq, Ollama).\n",
     ]
 
     if active_prov:
@@ -681,27 +681,28 @@ def _render_add_provider_help() -> BridgeReply:
         "Вы можете подключить <b>абсолютно любой OpenAI-совместимый URL</b> — список ничем не ограничен!\n",
         "<b>1. Универсальная команда с любым URL:</b>",
         "<code>/provider add &lt;URL&gt; &lt;api_key&gt; [модель]</code>\n",
-        "<b>Примеры:</b>",
-        "• <b>CheapAI:</b>",
-        "<code>/provider add https://api.cheapai.io/v1 sk-... gpt-4o</code>",
-        "<i>(или кратко: <code>/provider add cheapai sk-...</code>)</i>\n",
-        "• <b>Любой произвольный сервер:</b>",
-        "<code>/provider add http://127.0.0.1:11434/v1 ollama qwen2.5-coder:32b</code>",
-        "<code>/provider add https://api.together.xyz/v1 sk-... meta-llama/Llama-3.3-70B-Instruct-Turbo</code>\n",
+        "<b>Примеры для крупных провайдеров:</b>",
+        "• <b>OpenRouter:</b>",
+        "<code>/provider add https://openrouter.ai/api/v1 sk-...</code>",
+        "<i>(или кратко: <code>/provider add openrouter sk-...</code>)</i>\n",
+        "• <b>DeepSeek:</b>",
+        "<code>/provider add https://api.deepseek.com/v1 sk-... deepseek-chat</code>\n",
+        "• <b>Локальный или сторонний сервер:</b>",
+        "<code>/provider add http://127.0.0.1:11434/v1 ollama qwen2.5-coder:32b</code>\n",
         "<b>2. Быстрое изменение активного провайдера:</b>",
         "• <code>/provider url https://...</code> — изменить адрес",
         "• <code>/provider key sk-...</code> — обновить API ключ",
         "• <code>/provider model gpt-4o</code> — сменить модель\n",
-        "<b>3. Быстрые пресеты в один клик:</b>",
+        "<b>3. Готовые пресеты крупных провайдеров:</b>",
         "<i>(Сообщение с секретным API ключом сразу удаляется ботом из чата)</i>",
     ]
     keyboard = [
         [
-            {"text": "⚡️ CheapAI", "callback_data": "prov:preset:cheapai"},
             {"text": "⚡️ OpenRouter", "callback_data": "prov:preset:openrouter"},
+            {"text": "⚡️ DeepSeek", "callback_data": "prov:preset:deepseek"},
         ],
         [
-            {"text": "⚡️ DeepSeek", "callback_data": "prov:preset:deepseek"},
+            {"text": "⚡️ Groq Cloud", "callback_data": "prov:preset:groq"},
             {"text": "⚡️ Ollama", "callback_data": "prov:preset:ollama"},
         ],
         [{"text": "← К провайдерам", "callback_data": "nav:providers"}],
@@ -761,25 +762,20 @@ def _render_wizard_step_url(wiz: dict[str, Any]) -> BridgeReply:
         "🧙‍♂️ <b>Мастер настройки API (Шаг 1 из 3: Base URL)</b>\n",
         "Укажите сетевой адрес OpenAI-совместимого эндпоинта.\n",
         "👇 <b>Отправьте URL сообщением в чат</b> (любой адрес без ограничений):",
-        "• <code>https://api.cheapai.io/v1</code>",
         "• <code>https://openrouter.ai/api/v1</code>",
         "• <code>https://api.deepseek.com/v1</code>",
-        "• <code>http://127.0.0.1:11434/v1</code> (локальная Ollama)",
-        "• <code>http://127.0.0.1:8000/v1</code> (vLLM / LM Studio)\n",
-        "Или выберите готовый пресет кнопкой ниже:",
+        "• <code>https://api.groq.com/openai/v1</code>",
+        "• <code>http://127.0.0.1:11434/v1</code> (локальная Ollama)\n",
+        "Или выберите готовый пресет крупного провайдера кнопкой ниже:",
     ]
     keyboard = [
         [
-            {"text": "⚡️ CheapAI (cheapai.io)", "callback_data": "prov:wiz:preset:cheapai"},
             {"text": "⚡️ OpenRouter", "callback_data": "prov:wiz:preset:openrouter"},
-        ],
-        [
             {"text": "⚡️ DeepSeek", "callback_data": "prov:wiz:preset:deepseek"},
-            {"text": "⚡️ Ollama (Local)", "callback_data": "prov:wiz:preset:ollama"},
         ],
         [
-            {"text": "⚡️ vLLM / LM Studio", "callback_data": "prov:wiz:preset:vllm"},
             {"text": "⚡️ Groq Cloud", "callback_data": "prov:wiz:preset:groq"},
+            {"text": "⚡️ Ollama (Local)", "callback_data": "prov:wiz:preset:ollama"},
         ],
         [
             {"text": "❌ Отмена", "callback_data": "prov:wiz:cancel"},
@@ -927,8 +923,8 @@ async def _handle_wizard_text_input(
             return BridgeReply(
                 "⚠️ <b>Это не похоже на валидный URL адрес.</b>\n\n"
                 "Пожалуйста, отправьте корректный адрес эндпоинта, например:\n"
-                "• <code>https://api.cheapai.io/v1</code>\n"
                 "• <code>https://openrouter.ai/api/v1</code>\n"
+                "• <code>https://api.deepseek.com/v1</code>\n"
                 "• <code>http://127.0.0.1:11434/v1</code>\n\n"
                 "Или нажмите кнопку с шаблоном:",
                 keyboard=_render_wizard_step_url(wiz).keyboard,
@@ -1415,9 +1411,9 @@ async def handle_text_command(
                     "⚠️ <b>Формат команды:</b>\n"
                     "<code>/provider add &lt;URL&gt; &lt;api_key&gt; [модель]</code>\n\n"
                     "Например:\n"
-                    "<code>/provider add https://api.cheapai.io/v1 sk-... gpt-4o</code>\n\n"
+                    "<code>/provider add https://openrouter.ai/api/v1 sk-...</code>\n\n"
                     "Или по пресету:\n"
-                    "<code>/provider add cheapai &lt;api_key&gt;</code>",
+                    "<code>/provider add openrouter &lt;api_key&gt;</code>",
                     keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
                 )
 
@@ -1443,7 +1439,7 @@ async def handle_text_command(
                 cur = f"\nТекущий: <code>{p.base_url}</code>" if p else ""
                 return BridgeReply(
                     "⚠️ <b>Укажите новый URL:</b>\n"
-                    f"<code>/provider url https://api.cheapai.io/v1</code>{cur}",
+                    f"<code>/provider url https://openrouter.ai/api/v1</code>{cur}",
                     keyboard=[[{"text": "← К провайдерам", "callback_data": "nav:providers"}]],
                 )
             from src.openai_providers import update_provider_url
@@ -1513,7 +1509,7 @@ async def handle_text_command(
 
         elif sub in ("switch", "set", "use"):
             if len(sub_parts) < 2:
-                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider set cheapai</code>")
+                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider set openrouter</code>")
             target_id = sub_parts[1].lower()
             if set_active_provider(target_id):
                 p = get_active_provider()
@@ -1525,7 +1521,7 @@ async def handle_text_command(
 
         elif sub in ("del", "delete", "remove"):
             if len(sub_parts) < 2:
-                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider del cheapai</code>")
+                return BridgeReply("⚠️ Укажите ID провайдера: <code>/provider del openrouter</code>")
             target_id = sub_parts[1].lower()
             if delete_provider(target_id):
                 return BridgeReply(
@@ -2011,7 +2007,7 @@ async def handle_callback(
         final_prov = OpenAIProvider(
             id=wiz.get("id", "custom"),
             name=wiz.get("name", "Custom"),
-            base_url=wiz.get("url", "https://api.cheapai.io/v1"),
+            base_url=wiz.get("url", "https://openrouter.ai/api/v1"),
             api_key=wiz.get("key", ""),
             default_model=m_name,
             models=models,
@@ -2026,7 +2022,7 @@ async def handle_callback(
         final_prov = OpenAIProvider(
             id=wiz.get("id", "custom"),
             name=wiz.get("name", "Custom"),
-            base_url=wiz.get("url", "https://api.cheapai.io/v1"),
+            base_url=wiz.get("url", "https://openrouter.ai/api/v1"),
             api_key=wiz.get("key", ""),
             default_model=m_name,
             models=wiz.get("models", []),
@@ -2041,7 +2037,7 @@ async def handle_callback(
     if data == "prov:edit_url":
         from src.openai_providers import get_active_provider
         p = get_active_provider()
-        cur_url = p.base_url if p else "https://api.cheapai.io/v1"
+        cur_url = p.base_url if p else "https://openrouter.ai/api/v1"
         return BridgeReply(
             "🌐 <b>Изменение Base URL провайдера</b>\n\n"
             f"Текущий адрес: <code>{html.escape(cur_url)}</code>\n\n"

@@ -521,7 +521,7 @@ async def execute_openai_compat(
         return (
             "⚠️ Не настроен ни один OpenAI-совместимый API провайдер.\n"
             "Добавьте провайдер командой:\n"
-            "<code>/provider add cheapai https://api.cheapai.io/v1 sk-...</code>\n"
+            "<code>/provider add openrouter https://openrouter.ai/api/v1 sk-...</code>\n"
             "<i>(или просто: <code>/provider add https://&lt;любой-url&gt; &lt;key&gt;</code>)</i>\n"
             "или через меню <b>/settings ➔ 🌐 API Провайдеры</b>.",
             1,
