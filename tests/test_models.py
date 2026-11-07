@@ -11,6 +11,9 @@ from src.models import (
     FALLBACK_MODELS,
     get_available_models,
     parse_models_output,
+    strip_model_effort,
+    deduplicate_models_by_base,
+    extract_model_and_effort,
 )
 
 
@@ -56,3 +59,34 @@ def test_get_available_models_fallback_on_error(monkeypatch: pytest.MonkeyPatch)
 
     models = get_available_models(force_refresh=True)
     assert models == FALLBACK_MODELS
+
+
+def test_strip_model_effort() -> None:
+    assert strip_model_effort("gemini-4-argon-medium", "Gemini 4 Argon (Medium)") == ("gemini-4-argon", "Gemini 4 Argon")
+    assert strip_model_effort("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)") == ("gemini-3.8-flash", "Gemini 3.8 Flash")
+    assert strip_model_effort("claude-opus-5-5-low", "Claude Opus 5.5 (Low)") == ("claude-opus-5-5", "Claude Opus 5.5")
+    assert strip_model_effort("gpt-6.1-sol", "GPT-6.1 Sol") == ("gpt-6.1-sol", "GPT-6.1 Sol")
+
+
+def test_deduplicate_models_by_base() -> None:
+    raw = [
+        ("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+        ("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+        ("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+        ("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+        ("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+        ("gpt-6.1-sol", "GPT-6.1 Sol"),
+    ]
+    deduped = deduplicate_models_by_base(raw)
+    assert deduped == [
+        ("gemini-4-argon", "Gemini 4 Argon"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+        ("gpt-6.1-sol", "GPT-6.1 Sol"),
+    ]
+
+
+def test_extract_model_and_effort() -> None:
+    assert extract_model_and_effort("gemini-4-argon-high", "") == ("gemini-4-argon", "high")
+    assert extract_model_and_effort("gemini-4-argon-low", "high") == ("gemini-4-argon", "high")
+    assert extract_model_and_effort("gemini-4-argon", "") == ("gemini-4-argon", "")
+    assert extract_model_and_effort("gpt-6.1-sol", "medium") == ("gpt-6.1-sol", "medium")

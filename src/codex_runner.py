@@ -65,12 +65,15 @@ def _build_codex_args(
     model: str,
     chat_dir: str,
     sandbox: str = "danger-full-access",
+    effort: str = "",
 ) -> list[str]:
     args = [codex_path]
     if sandbox:
         args.extend(["-s", sandbox])
     if chat_dir:
         args.extend(["-C", chat_dir])
+    if effort:
+        args.extend(["-c", f'model_reasoning_effort="{effort}"'])
 
     if thread_id:
         args.extend(["exec", "resume", "--json", "--skip-git-repo-check"])
@@ -92,6 +95,7 @@ async def run_codex(
     chat_dir: str,
     thread_id: str = "",
     model: str = "",
+    effort: str = "",
     codex_path: str = "/usr/local/bin/codex",
     timeout: float | None = None,
     inactivity_timeout: float | None = DEFAULT_INACTIVITY_TIMEOUT_S,
@@ -105,6 +109,7 @@ async def run_codex(
         prompt=prompt,
         thread_id=thread_id,
         model=model,
+        effort=effort,
         chat_dir=chat_dir,
     )
 

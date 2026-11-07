@@ -254,25 +254,33 @@ def _render_voice_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
 
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
-    agy_models = get_available_models()
+    from src.models import (
+        get_available_models,
+        get_available_codex_models,
+        get_available_openai_models,
+        strip_model_effort,
+    )
+
+    agy_models = get_available_models(dedup_efforts=True)
     codex_models = get_available_codex_models()
     rows: InlineKeyboard = []
 
-    # Section 1: Google Antigravity
+    # Section 1: Google Antigravity / Gemini
     rows.append([{"text": "── 🌐 Antigravity / Gemini ──", "callback_data": "noop"}])
+    current_base = strip_model_effort(current_per_chat)[0] if current_per_chat else ""
     for model_id, display_name in agy_models:
-        marker = "● " if model_id == current_per_chat else "○ "
+        marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
         label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
         rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
 
     # Section 2: OpenAI Codex
     rows.append([{"text": "── ⚡️ OpenAI Codex ──", "callback_data": "noop"}])
     for model_id, display_name in codex_models:
-        marker = "● " if model_id == current_per_chat else "○ "
+        marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
         label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
         rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
 
-    # Section 3: OpenAI-Compatible / Custom Provider (CeapAI, OpenRouter, DeepSeek, etc.)
+    # Section 3: OpenAI-Compatible / Custom Provider (CheapAI, OpenRouter, DeepSeek, etc.)
     openai_models = get_available_openai_models()
     if openai_models:
         rows.append([{"text": "── 🌐 OpenAI-Compatible API ──", "callback_data": "noop"}])
@@ -306,23 +314,52 @@ def _render_settings(cs: "ChatState", cfg: "Config") -> BridgeReply:
     return BridgeReply(text=render_status(cs, cfg), keyboard=_settings_keyboard())
 
 
-
-def _effort_keyboard(current_per_chat: str) -> InlineKeyboard:
+def _effort_keyboard(current_per_chat: str, model_id: str = "") -> InlineKeyboard:
     rows: InlineKeyboard = []
+    labels = {
+        "low": "⚡️ Low (Быстрый)",
+        "medium": "⚖️ Medium (Сбалансированный)",
+        "high": "🧠 High (Глубокое мышление)",
+    }
     for e in EFFORT_CHOICES:
         marker = "● " if e == current_per_chat else "○ "
-        rows.append([{"text": marker + e, "callback_data": f"e:{e}"}])
+        lbl = labels.get(e, e.capitalize())
+        rows.append([{"text": f"{marker}{lbl}", "callback_data": f"e:{e}"}])
     default_marker = "● " if not current_per_chat else "○ "
     rows.append([
         {"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"e:{_DEFAULT_TOKEN}"}
     ])
-    rows.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
+    back_row: list[dict[str, Any]] = []
+    if model_id:
+        back_row.append({"text": "← К выбору моделей", "callback_data": "nav:model"})
+    back_row.append({"text": "← Назад к настройкам", "callback_data": "nav:settings"})
+    rows.append(back_row)
     return rows
 
+
 def _render_effort_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
+    cur = cs.model or cfg.agy.model
+    engine = getattr(cs, "engine", "") or get_engine_for_model(cur)
+    eng_name = "Codex" if engine == "codex" else ("OpenAI" if engine == "openai" else "Gemini / Antigravity")
+    m_info = f" для модели <code>{html.escape(cur)}</code> ({eng_name})" if cur else ""
     return BridgeReply(
-        text=f"⚙️ Выберите effort для этого чата\n\nТекущий: {cs.effort or 'default'}",
-        keyboard=_effort_keyboard(cs.effort),
+        text=f"⚙️ <b>Выберите уровень Reasoning Effort</b>{m_info}\n\nТекущий уровень: <code>{html.escape(cs.effort or 'default')}</code>",
+        keyboard=_effort_keyboard(cs.effort, model_id=cs.model),
+    )
+
+
+def _render_model_effort_picker(model_id: str, cs: "ChatState", cfg: "Config") -> BridgeReply:
+    engine = get_engine_for_model(model_id)
+    eng_name = "Codex" if engine == "codex" else ("OpenAI" if engine == "openai" else "Gemini / Antigravity")
+    text = (
+        f"🤖 <b>Выбрана модель:</b> <code>{html.escape(model_id)}</code> ({eng_name})\n\n"
+        f"⚙️ <b>Теперь выберите уровень Reasoning Effort (мышления) для этой модели:</b>\n"
+        f"Текущий уровень: <code>{html.escape(cs.effort or 'default')}</code>"
+    )
+    return BridgeReply(
+        text=text,
+        keyboard=_effort_keyboard(cs.effort, model_id=model_id),
+        toast=f"Модель: {model_id}. Выберите effort",
     )
 
 import sqlite3
@@ -1385,6 +1422,8 @@ async def handle_text_command(
             if is_valid_model(args):
                 cs.model = args
                 cs.engine = get_engine_for_model(args)
+                if cs.engine in ("agy", "codex"):
+                    return _render_model_effort_picker(args, cs, cfg)
                 return BridgeReply(f"🤖 Модель изменена на <b>{args}</b> (Движок: <b>{cs.engine.upper()}</b>)")
             return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}")
         return _render_model_picker(cs, cfg)
@@ -1884,24 +1923,27 @@ async def handle_callback(
             cs.model = ""
             cs.engine = ""
             toast = "Настройки по умолчанию"
+            rep = _render_settings(cs, cfg)
+            return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
         elif is_valid_model(choice):
             cs.model = choice
             cs.engine = get_engine_for_model(choice)
+            if cs.engine in ("agy", "codex"):
+                return _render_model_effort_picker(choice, cs, cfg)
             toast = f"Модель: {choice} ({cs.engine.upper()})"
         else:
             toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)
         return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
 
-
     if data.startswith("e:"):
         choice = data[2:]
         if choice == _DEFAULT_TOKEN:
             cs.effort = ""
-            toast = "Настройки по умолчанию"
+            toast = f"Модель {cs.model}: Effort по умолчанию" if cs.model else "Effort по умолчанию"
         elif choice in EFFORT_CHOICES:
             cs.effort = choice
-            toast = f"Effort: {choice}"
+            toast = f"✅ Модель {cs.model} · Effort: {choice}" if cs.model else f"Effort: {choice}"
         else:
             toast = "Неизвестный выбор"
         rep = _render_settings(cs, cfg)

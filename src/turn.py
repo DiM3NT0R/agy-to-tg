@@ -452,6 +452,7 @@ async def execute_codex(
             chat_dir=cs.chat_dir,
             thread_id=cs.codex_thread_id,
             model=cs.model,
+            effort=cs.effort,
             codex_path=codex_path,
             timeout=timeout_s,
             on_event=handle_codex_event,

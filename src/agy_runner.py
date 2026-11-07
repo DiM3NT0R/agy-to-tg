@@ -93,8 +93,12 @@ def _build_args(
     else:
         args.append("--new-project")
     if model:
-        args.extend(["--model", model])
-    if effort:
+        from src.models import extract_model_and_effort
+        clean_model, eff = extract_model_and_effort(model, effort)
+        args.extend(["--model", clean_model])
+        if eff:
+            args.extend(["--effort", eff])
+    elif effort:
         args.extend(["--effort", effort])
     if mode == "plan":
         args.extend(["--mode", "plan"])

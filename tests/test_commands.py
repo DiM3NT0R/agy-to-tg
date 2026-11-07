@@ -97,10 +97,31 @@ async def test_callback_nav_settings() -> None:
 
 async def test_callback_model_choice() -> None:
     cs = _state()
-    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-3.6-flash-high")
+    # 1. Choose Gemini model -> transitions to effort picker
+    cq = CallbackQuery(update_id=1, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gemini-4-argon")
     reply = await handle_callback(cq, cs, _cfg())
-    assert cs.model == "gemini-3.6-flash-high"
-    assert "gemini-3.6-flash-high" in reply.toast
+    assert cs.model == "gemini-4-argon"
+    assert "gemini-4-argon" in reply.toast
+    assert "Reasoning Effort" in reply.text
+
+    # 2. Select effort -> saves effort
+    cq_eff = CallbackQuery(update_id=2, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="e:high")
+    reply_eff = await handle_callback(cq_eff, cs, _cfg())
+    assert cs.effort == "high"
+    assert "high" in reply_eff.toast.lower()
+
+    # 3. Choose Codex model -> transitions to effort picker
+    cq_codex = CallbackQuery(update_id=3, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="m:gpt-6.1-sol")
+    reply_codex = await handle_callback(cq_codex, cs, _cfg())
+    assert cs.model == "gpt-6.1-sol"
+    assert cs.engine == "codex"
+    assert "Reasoning Effort" in reply_codex.text
+
+    # 4. Select effort for codex model
+    cq_codex_eff = CallbackQuery(update_id=4, callback_query_id="q", chat_id=42, user_id=42, message_id=1, data="e:medium")
+    reply_codex_eff = await handle_callback(cq_codex_eff, cs, _cfg())
+    assert cs.effort == "medium"
+    assert "medium" in reply_codex_eff.toast.lower()
 
 
 async def test_callback_reset() -> None:

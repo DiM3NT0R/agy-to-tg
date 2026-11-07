@@ -48,6 +48,46 @@ _cached_codex_at: float = 0.0
 _ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
+def strip_model_effort(model_id: str, display_name: str = "") -> tuple[str, str]:
+    """Strip effort suffix (-low, -medium, -high, -xhigh, -max) from model id and display name."""
+    efforts = ("-low", "-medium", "-high", "-xhigh", "-max")
+    clean_id = model_id
+    for eff in efforts:
+        if clean_id.lower().endswith(eff):
+            clean_id = clean_id[:-len(eff)]
+            break
+
+    clean_name = display_name or clean_id
+    clean_name = re.sub(r"\s*\((Low|Medium|High|XHigh|Max)\)\s*$", "", clean_name, flags=re.IGNORECASE).strip()
+    return clean_id, clean_name
+
+
+def deduplicate_models_by_base(models: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Deduplicate model list by removing effort variants and keeping base models."""
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for mid, mname in models:
+        base_id, base_name = strip_model_effort(mid, mname)
+        if base_id not in seen:
+            seen.add(base_id)
+            result.append((base_id, base_name))
+    return result
+
+
+def extract_model_and_effort(model: str, effort: str = "") -> tuple[str, str]:
+    """Separate base model and effort suffix if present."""
+    efforts = ("-low", "-medium", "-high", "-xhigh", "-max")
+    clean_model = model
+    eff = effort
+    for sfx in efforts:
+        if clean_model.lower().endswith(sfx):
+            if not eff:
+                eff = sfx.lstrip("-")
+            clean_model = clean_model[:-len(sfx)]
+            break
+    return clean_model, eff
+
+
 def parse_models_output(output: str) -> list[tuple[str, str]]:
     """Parse output from `agy models` into (model_id, display_name) pairs."""
     models: list[tuple[str, str]] = []
@@ -74,34 +114,43 @@ def parse_models_output(output: str) -> list[tuple[str, str]]:
     return models
 
 
-def get_available_models(agy_path: str = "agy", force_refresh: bool = False) -> list[tuple[str, str]]:
+def get_available_models(
+    agy_path: str = "agy",
+    force_refresh: bool = False,
+    dedup_efforts: bool = False,
+) -> list[tuple[str, str]]:
     """Fetch available models from `agy models` with TTL cache and fallback."""
     global _cached_models, _cached_at
     now = time.time()
+    raw = None
     if not force_refresh and _cached_models is not None and (now - _cached_at) < _CACHE_TTL_S:
-        return _cached_models
+        raw = _cached_models
+    else:
+        try:
+            res = subprocess.run(
+                [agy_path, "models"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout:
+                parsed = parse_models_output(res.stdout)
+                if parsed:
+                    _cached_models = parsed
+                    _cached_at = now
+                    raw = parsed
+            if raw is None:
+                LOG.warning("agy models returned non-zero (%d) or empty: stderr=%s", res.returncode, res.stderr)
+        except Exception as e:
+            LOG.warning("Failed to run '%s models': %s", agy_path, e)
 
-    try:
-        res = subprocess.run(
-            [agy_path, "models"],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-            check=False,
-        )
-        if res.returncode == 0 and res.stdout:
-            parsed = parse_models_output(res.stdout)
-            if parsed:
-                _cached_models = parsed
-                _cached_at = now
-                return parsed
-        LOG.warning("agy models returned non-zero (%d) or empty: stderr=%s", res.returncode, res.stderr)
-    except Exception as e:
-        LOG.warning("Failed to run '%s models': %s", agy_path, e)
+    if raw is None:
+        raw = _cached_models or list(FALLBACK_MODELS)
 
-    if _cached_models:
-        return _cached_models
-    return list(FALLBACK_MODELS)
+    if dedup_efforts:
+        return deduplicate_models_by_base(raw)
+    return raw
 
 
 def get_available_codex_models(force_refresh: bool = False) -> list[tuple[str, str]]:

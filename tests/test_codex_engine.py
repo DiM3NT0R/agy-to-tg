@@ -42,6 +42,18 @@ def test_build_codex_args():
         "Hello Codex",
     ]
 
+    # Resumed session with effort
+    args_effort = _build_codex_args(
+        codex_path="/usr/local/bin/codex",
+        prompt="Test effort",
+        thread_id="",
+        model="gpt-6.1-sol",
+        chat_dir="/tmp/test",
+        effort="high",
+    )
+    assert "-c" in args_effort
+    assert 'model_reasoning_effort="high"' in args_effort
+
     # Resumed session
     args_resume = _build_codex_args(
         codex_path="/usr/local/bin/codex",
