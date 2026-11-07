@@ -219,6 +219,16 @@ def get_engine_for_model(model: str) -> str:
     except Exception:
         pass
 
+    try:
+        from src.models_config import load_models_config
+        mcfg = load_models_config()
+        base_m, _ = strip_model_effort(m)
+        for prov_name, custom_items in mcfg.custom_models.items():
+            if any(m == str(it.get("id", "")).lower() or base_m == str(it.get("id", "")).lower() for it in custom_items):
+                return prov_name
+    except Exception:
+        pass
+
     if m.startswith(("gpt-", "codex-", "o1", "o3", "o4")):
         if "gpt-oss" in m:
             return "agy"

@@ -328,4 +328,113 @@ async def test_voice_command_and_callbacks() -> None:
     assert "ВКЛ" in auto_reply.toast
 
 
+async def test_model_picker_keyboard_and_config_button(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "models_config.json"
+    monkeypatch.setattr("src.models_config._DEFAULT_CONFIG_PATH", p)
+
+    cs = _state()
+    cfg = _cfg()
+    reply = await handle_text_command(_FakeMsg("/model"), cs, cfg)
+    assert reply is not None
+    assert reply.keyboard is not None
+    # Verify button to open models config
+    all_buttons = [btn["text"] for row in reply.keyboard for btn in row]
+    assert any("Настроить список моделей" in text for text in all_buttons)
+    all_callbacks = [btn["callback_data"] for row in reply.keyboard for btn in row]
+    assert "mcfg:view:agy:0" in all_callbacks
+
+
+async def test_models_config_command_and_tabs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "models_config.json"
+    monkeypatch.setattr("src.models_config._DEFAULT_CONFIG_PATH", p)
+
+    cs = _state()
+    cfg = _cfg()
+
+    # /models_config text command
+    reply = await handle_text_command(_FakeMsg("/models_config"), cs, cfg)
+    assert reply is not None
+    assert "Настройка видимости моделей" in reply.text
+    assert "Google Antigravity" in reply.text
+
+    # Switch tab to codex
+    cq_tab = CallbackQuery(update_id=10, callback_query_id="q10", chat_id=42, user_id=42, message_id=1, data="mcfg:tab:codex")
+    tab_rep = await handle_callback(cq_tab, cs, cfg)
+    assert "OpenAI Codex" in tab_rep.text
+
+    # Switch tab to openai
+    cq_api = CallbackQuery(update_id=11, callback_query_id="q11", chat_id=42, user_id=42, message_id=1, data="mcfg:tab:openai")
+    api_rep = await handle_callback(cq_api, cs, cfg)
+    assert "OpenAI API" in api_rep.text
+
+
+async def test_models_config_toggle_and_reset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "models_config.json"
+    monkeypatch.setattr("src.models_config._DEFAULT_CONFIG_PATH", p)
+
+    cs = _state()
+    cfg = _cfg()
+
+    # Toggle model at index 0 of agy
+    cq_tgl = CallbackQuery(update_id=12, callback_query_id="q12", chat_id=42, user_id=42, message_id=1, data="mcfg:tgl:agy:0:0")
+    tgl_rep = await handle_callback(cq_tgl, cs, cfg)
+    assert "скрыта" in tgl_rep.toast
+
+    # Toggle it back
+    cq_tgl2 = CallbackQuery(update_id=13, callback_query_id="q13", chat_id=42, user_id=42, message_id=1, data="mcfg:tgl:agy:0:0")
+    tgl_rep2 = await handle_callback(cq_tgl2, cs, cfg)
+    assert "включена" in tgl_rep2.toast
+
+    # Reset section
+    cq_rst = CallbackQuery(update_id=14, callback_query_id="q14", chat_id=42, user_id=42, message_id=1, data="mcfg:rst:agy")
+    rst_rep = await handle_callback(cq_rst, cs, cfg)
+    assert "сброшен" in rst_rep.toast.lower()
+
+
+async def test_models_config_interactive_add_and_cancel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "models_config.json"
+    monkeypatch.setattr("src.models_config._DEFAULT_CONFIG_PATH", p)
+
+    cs = _state()
+    cfg = _cfg()
+
+    # Click add model button
+    cq_add = CallbackQuery(update_id=15, callback_query_id="q15", chat_id=42, user_id=42, message_id=1, data="mcfg:add:codex:0")
+    add_rep = await handle_callback(cq_add, cs, cfg)
+    assert "Добавление модели" in add_rep.text
+
+    # Cancel via /cancel
+    cancel_rep = await handle_text_command(_FakeMsg("/cancel"), cs, cfg)
+    assert cancel_rep is not None
+    assert "Настройка видимости моделей" in cancel_rep.text
+
+    # Click add model button again
+    await handle_callback(cq_add, cs, cfg)
+
+    # Send model name in chat
+    add_text_rep = await handle_text_command(_FakeMsg("my-gpt-model My GPT Model"), cs, cfg)
+    assert add_text_rep is not None
+    assert "my-gpt-model" in add_text_rep.toast
+
+
+async def test_slash_model_add_and_del(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "models_config.json"
+    monkeypatch.setattr("src.models_config._DEFAULT_CONFIG_PATH", p)
+
+    cs = _state()
+    cfg = _cfg()
+
+    # Add model command
+    add_rep = await handle_text_command(_FakeMsg("/model_add codex gpt-custom-slash GPT Custom"), cs, cfg)
+    assert add_rep is not None
+    assert "gpt-custom-slash" in add_rep.text
+    assert "CODEX" in add_rep.text
+
+    # Del model command
+    del_rep = await handle_text_command(_FakeMsg("/model_del gpt-custom-slash"), cs, cfg)
+    assert del_rep is not None
+    assert "удалена" in del_rep.text
+
+
+
 

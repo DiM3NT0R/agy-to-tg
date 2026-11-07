@@ -67,6 +67,9 @@ HELP_TEXT = (
     "/account  — управление и смена аккаунтов OpenAI Codex (/auth)\n"
     "/codex_key — подключить OpenAI по API ключу\n"
     "/model    — выбрать модель (переопределяет настройки для чата)\n"
+    "/models_config — настройка списка и видимости моделей (AGY, Codex, API)\n"
+    "/model_add — добавить свою модель в список (/model_add prov id [name])\n"
+    "/model_del — удалить добавленную модель (/model_del id)\n"
     "/effort   — выбрать уровень effort (low/medium/high)\n"
     "/timeout  — таймаут работы агента (напр. 30m, 1h)\n"
     "/mode     — выбрать режим (Code или Plan)\n"
@@ -254,44 +257,46 @@ def _render_voice_picker(cs: "ChatState", cfg: "Config") -> BridgeReply:
 
 
 def _model_keyboard(current_per_chat: str) -> InlineKeyboard:
-    from src.models import (
-        get_available_models,
-        get_available_codex_models,
-        get_available_openai_models,
-        strip_model_effort,
-    )
+    from src.models import strip_model_effort
+    from src.models_config import get_active_models_for_picker
 
-    agy_models = get_available_models(dedup_efforts=True)
-    codex_models = get_available_codex_models()
+    agy_models = get_active_models_for_picker("agy")
+    codex_models = get_active_models_for_picker("codex")
+    openai_models = get_active_models_for_picker("openai")
     rows: InlineKeyboard = []
 
-    # Section 1: Google Antigravity / Gemini
-    rows.append([{"text": "── 🌐 Antigravity / Gemini ──", "callback_data": "noop"}])
     current_base = strip_model_effort(current_per_chat)[0] if current_per_chat else ""
-    for model_id, display_name in agy_models:
-        marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
-        label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
-        rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
+
+    # Section 1: Google Antigravity / Gemini
+    if agy_models:
+        rows.append([{"text": "── 🌐 Antigravity / Gemini ──", "callback_data": "noop"}])
+        for model_id, display_name in agy_models:
+            marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
+            label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
+            rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
 
     # Section 2: OpenAI Codex
-    rows.append([{"text": "── ⚡️ OpenAI Codex ──", "callback_data": "noop"}])
-    for model_id, display_name in codex_models:
-        marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
-        label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
-        rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
+    if codex_models:
+        rows.append([{"text": "── ⚡️ OpenAI Codex ──", "callback_data": "noop"}])
+        for model_id, display_name in codex_models:
+            marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
+            label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
+            rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
 
     # Section 3: OpenAI-Compatible / Custom Provider (CheapAI, OpenRouter, DeepSeek, etc.)
-    openai_models = get_available_openai_models()
     if openai_models:
         rows.append([{"text": "── 🌐 OpenAI-Compatible API ──", "callback_data": "noop"}])
         for model_id, display_name in openai_models[:12]:
-            marker = "● " if model_id == current_per_chat else "○ "
+            marker = "● " if (model_id == current_per_chat or model_id == current_base) else "○ "
             label = f"{marker}{display_name}" if display_name and display_name != model_id else f"{marker}{model_id}"
             rows.append([{"text": label, "callback_data": f"m:{model_id}"}])
 
     default_marker = "● " if not current_per_chat else "○ "
     rows.append([
         {"text": default_marker + "По умолчанию (из конфига)", "callback_data": f"m:{_DEFAULT_TOKEN}"}
+    ])
+    rows.append([
+        {"text": "⚙️ Настроить список моделей", "callback_data": "mcfg:view:agy:0"}
     ])
     rows.append([{"text": "← Назад к настройкам", "callback_data": "nav:settings"}])
     return rows
@@ -1089,6 +1094,135 @@ async def _handle_codex_key_cmd(key_arg: str, msg: "InboundMessage", tg: Any = N
     )
 
 
+
+# ---------------------------------------------------------------------------
+# In-Bot Model Display & Visibility Configuration
+# ---------------------------------------------------------------------------
+_WAITING_FOR_MODEL_ADD: dict[tuple[int, int | None] | int, dict[str, Any]] = {}
+
+
+def get_waiting_model_add(chat_id: int, thread_id: int | None = None) -> dict[str, Any] | None:
+    key = (chat_id, thread_id) if thread_id is not None else chat_id
+    item = _WAITING_FOR_MODEL_ADD.get(key)
+    if item is None and thread_id is not None:
+        item = _WAITING_FOR_MODEL_ADD.get(chat_id)
+    if item is not None:
+        if time.monotonic() - item.get("started_at", 0) > 300:
+            clear_waiting_model_add(chat_id, thread_id)
+            return None
+    return item
+
+
+def set_waiting_model_add(chat_id: int, thread_id: int | None, data: dict[str, Any]) -> None:
+    data["started_at"] = time.monotonic()
+    key = (chat_id, thread_id) if thread_id is not None else chat_id
+    _WAITING_FOR_MODEL_ADD[key] = data
+
+
+def clear_waiting_model_add(chat_id: int, thread_id: int | None = None) -> None:
+    if thread_id is not None:
+        _WAITING_FOR_MODEL_ADD.pop((chat_id, thread_id), None)
+    _WAITING_FOR_MODEL_ADD.pop(chat_id, None)
+
+
+def _render_models_config_card(provider: str = "agy", page: int = 0) -> BridgeReply:
+    prov = provider.strip().lower()
+    if prov not in ("agy", "codex", "openai"):
+        prov = "agy"
+
+    from src.models_config import (
+        get_all_provider_models,
+        get_provider_summary_counts,
+    )
+
+    counts = get_provider_summary_counts()
+    agy_on, agy_tot = counts.get("agy", (0, 0))
+    cdx_on, cdx_tot = counts.get("codex", (0, 0))
+    api_on, api_tot = counts.get("openai", (0, 0))
+
+    prov_names = {
+        "agy": "Google Antigravity / Gemini",
+        "codex": "OpenAI Codex",
+        "openai": "OpenAI API / Провайдеры",
+    }
+    cur_title = prov_names.get(prov, prov.upper())
+
+    all_models = get_all_provider_models(prov)
+    total_items = len(all_models)
+    page_size = 6
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    if page < 0:
+        page = 0
+    elif page >= total_pages:
+        page = total_pages - 1
+
+    start_idx = page * page_size
+    page_items = all_models[start_idx : start_idx + page_size]
+    cur_on = sum(1 for _, _, is_on, _ in all_models if is_on)
+
+    lines = [
+        "⚙️ <b>Настройка видимости моделей</b>\n",
+        f"Раздел: <b>{cur_title}</b>",
+        f"Активно: <b>{cur_on}</b> из <b>{total_items}</b> моделей\n",
+        "Нажимайте на модель, чтобы скрыть <code>[❌]</code> или вернуть <code>[✅]</code> её в меню <code>/model</code>.",
+    ]
+    if any(is_custom for _, _, _, is_custom in all_models):
+        lines.append("💡 Кнопка 🗑 удаляет пользовательскую добавленную модель.")
+
+    keyboard: InlineKeyboard = []
+
+    # 1. Provider Tabs
+    keyboard.append([
+        {"text": ("● " if prov == "agy" else "") + f"🌐 AGY ({agy_on}/{agy_tot})", "callback_data": "mcfg:tab:agy"},
+        {"text": ("● " if prov == "codex" else "") + f"⚡️ Codex ({cdx_on}/{cdx_tot})", "callback_data": "mcfg:tab:codex"},
+        {"text": ("● " if prov == "openai" else "") + f"🔌 API ({api_on}/{api_tot})", "callback_data": "mcfg:tab:openai"},
+    ])
+
+    # 2. Model Rows
+    if not page_items:
+        keyboard.append([{"text": "— Нет моделей в этом разделе —", "callback_data": "noop"}])
+    else:
+        for idx, (mid, mname, is_on, is_custom) in enumerate(page_items):
+            icon = "✅ " if is_on else "❌ "
+            lbl = mname if mname and mname != mid else mid
+            if len(lbl) > 28:
+                lbl = lbl[:26] + "…"
+            btn_text = f"{icon}{lbl}"
+            row = [{"text": btn_text, "callback_data": f"mcfg:tgl:{prov}:{page}:{idx}"}]
+            if is_custom:
+                row.append({"text": "🗑", "callback_data": f"mcfg:del:{prov}:{page}:{idx}"})
+            keyboard.append(row)
+
+    # 3. Pagination Row
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append({"text": "⬅️ Назад", "callback_data": f"mcfg:page:{prov}:{page - 1}"})
+        else:
+            nav_row.append({"text": "·", "callback_data": "noop"})
+        nav_row.append({"text": f"{page + 1} / {total_pages}", "callback_data": "noop"})
+        if page < total_pages - 1:
+            nav_row.append({"text": "Вперед ➡️", "callback_data": f"mcfg:page:{prov}:{page + 1}"})
+        else:
+            nav_row.append({"text": "·", "callback_data": "noop"})
+        keyboard.append(nav_row)
+
+    # 4. Action Row
+    short_prov = {"agy": "AGY", "codex": "Codex", "openai": "API"}.get(prov, prov.upper())
+    keyboard.append([
+        {"text": f"➕ Добавить в {short_prov}", "callback_data": f"mcfg:add:{prov}:{page}"},
+        {"text": "🔄 Сброс раздела", "callback_data": f"mcfg:rst:{prov}"},
+    ])
+
+    # 5. Bottom Navigation
+    keyboard.append([
+        {"text": "← К выбору модели", "callback_data": "nav:model"},
+        {"text": "← В настройки", "callback_data": "nav:settings"},
+    ])
+
+    return BridgeReply(text="\n".join(lines), keyboard=keyboard)
+
+
 async def handle_text_command(
     msg: "InboundMessage",
     cs: "ChatState",
@@ -1107,6 +1241,12 @@ async def handle_text_command(
 
     tid = getattr(msg, "message_thread_id", None)
     if cmd in ("/cancel", "/stop"):
+        if get_waiting_model_add(msg.chat_id, tid):
+            w = get_waiting_model_add(msg.chat_id, tid)
+            clear_waiting_model_add(msg.chat_id, tid)
+            prov = w.get("provider", "agy") if w else "agy"
+            page = w.get("page", 0) if w else 0
+            return _render_models_config_card(prov, page)
         if get_provider_wizard(msg.chat_id, tid):
             clear_provider_wizard(msg.chat_id, tid)
             return BridgeReply(
@@ -1115,6 +1255,26 @@ async def handle_text_command(
             )
 
     if not cmd.startswith("/"):
+        w_add = get_waiting_model_add(msg.chat_id, tid)
+        if w_add:
+            clear_waiting_model_add(msg.chat_id, tid)
+            prov = w_add.get("provider", "openai")
+            page = w_add.get("page", 0)
+            parts = stripped.split(maxsplit=1)
+            mid = parts[0]
+            mname = parts[1] if len(parts) > 1 else mid
+            if is_valid_model(mid):
+                from src.models_config import add_custom_model
+                add_custom_model(prov, mid, mname)
+                rep = _render_models_config_card(prov, page)
+                return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=f"Модель {mid} добавлена")
+            else:
+                return BridgeReply(
+                    f"⚠️ Недопустимый идентификатор модели: <code>{html.escape(mid)}</code>\n\n"
+                    "Используйте только латинские буквы, цифры, дефис, точку или слэш.",
+                    keyboard=[[{"text": "← К настройке моделей", "callback_data": f"mcfg:view:{prov}:{page}"}]],
+                )
+
         wiz = get_provider_wizard(msg.chat_id, tid)
         if wiz:
             return await _handle_wizard_text_input(msg, wiz, tg)
@@ -1429,6 +1589,80 @@ async def handle_text_command(
                 return BridgeReply(f"🤖 Модель изменена на <b>{args}</b> (Движок: <b>{cs.engine.upper()}</b>)")
             return BridgeReply(f"⚠️ Неподдерживаемая модель: {args}")
         return _render_model_picker(cs, cfg)
+    if cmd in ("/models_config", "/model_config", "/models_visibility"):
+        target_prov = "agy"
+        if args:
+            sub = args.strip().lower()
+            if sub in ("codex", "openai_codex", "chatgpt"):
+                target_prov = "codex"
+            elif sub in ("api", "provider", "providers", "openai", "cheapai"):
+                target_prov = "openai"
+        return _render_models_config_card(target_prov, 0)
+    if cmd in ("/model_add", "/models_add"):
+        if not args:
+            return BridgeReply(
+                "➕ <b>Добавление модели</b>\n\n"
+                "Использование:\n"
+                "• <code>/model_add &lt;провайдер&gt; &lt;model_id&gt; [название]</code>\n"
+                "• <code>/model_add &lt;model_id&gt; [название]</code> (автоопределение)\n\n"
+                "Провайдеры: <code>agy</code>, <code>codex</code>, <code>openai</code>\n\n"
+                "Примеры:\n"
+                "• <code>/model_add codex gpt-5-preview GPT-5 Preview</code>\n"
+                "• <code>/model_add openai mistral-large Mistral Large</code>\n"
+                "• <code>/model_add gemini-2.5-flash-custom</code>",
+                keyboard=[[{"text": "⚙️ Настроить список моделей", "callback_data": "mcfg:view:agy:0"}]],
+            )
+        parts = args.split()
+        if parts[0].lower() in ("agy", "codex", "openai"):
+            prov = parts[0].lower()
+            mid = parts[1] if len(parts) > 1 else ""
+            mname = " ".join(parts[2:]) if len(parts) > 2 else mid
+        else:
+            mid = parts[0]
+            mname = " ".join(parts[1:]) if len(parts) > 1 else mid
+            prov = get_engine_for_model(mid)
+
+        if not mid or not is_valid_model(mid):
+            return BridgeReply(f"⚠️ Недопустимый идентификатор модели: <code>{html.escape(mid)}</code>")
+
+        from src.models_config import add_custom_model
+        add_custom_model(prov, mid, mname)
+        return BridgeReply(
+            f"✅ Модель <code>{html.escape(mid)}</code> добавлена в раздел <b>{prov.upper()}</b>!",
+            keyboard=[
+                [{"text": "🤖 К выбору модели", "callback_data": "nav:model"}],
+                [{"text": "⚙️ Настроить список моделей", "callback_data": f"mcfg:view:{prov}:0"}],
+            ],
+        )
+    if cmd in ("/model_del", "/models_del"):
+        if not args:
+            return BridgeReply("Использование: <code>/model_del &lt;model_id&gt;</code> или <code>/model_del &lt;провайдер&gt; &lt;model_id&gt;</code>")
+        parts = args.split()
+        prov = ""
+        if parts[0].lower() in ("agy", "codex", "openai"):
+            prov = parts[0].lower()
+            mid = parts[1] if len(parts) > 1 else ""
+        else:
+            mid = parts[0]
+
+        from src.models_config import remove_custom_model
+        removed = False
+        target_prov = prov or "openai"
+        if prov:
+            removed = remove_custom_model(prov, mid)
+        else:
+            for p in ("agy", "codex", "openai"):
+                if remove_custom_model(p, mid):
+                    removed = True
+                    target_prov = p
+                    break
+
+        if removed:
+            return BridgeReply(
+                f"🗑 Пользовательская модель <code>{html.escape(mid)}</code> удалена.",
+                keyboard=[[{"text": "⚙️ Настроить список моделей", "callback_data": f"mcfg:view:{target_prov}:0"}]],
+            )
+        return BridgeReply(f"⚠️ Модель <code>{html.escape(mid)}</code> не найдена в списке добавленных.")
     if cmd == "/mode":
         if args:
             if args in {"code", "plan"}:
@@ -1896,6 +2130,78 @@ async def handle_callback(
         return BridgeReply(text="\n".join(lines), keyboard=rows)
     if data == "nav:model":
         return _render_model_picker(cs, cfg)
+    if data in ("nav:models_config", "nav:models_cfg"):
+        return _render_models_config_card("agy", 0)
+    if data.startswith("mcfg:"):
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else "view"
+        prov = parts[2] if len(parts) > 2 else "agy"
+        tid = getattr(cq, "message_thread_id", None)
+
+        if action == "view":
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            clear_waiting_model_add(cq.chat_id, tid)
+            return _render_models_config_card(prov, page)
+
+        if action == "tab":
+            clear_waiting_model_add(cq.chat_id, tid)
+            return _render_models_config_card(prov, 0)
+
+        if action == "page":
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            return _render_models_config_card(prov, page)
+
+        if action == "tgl":
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            from src.models_config import get_all_provider_models, toggle_model_visibility
+            all_m = get_all_provider_models(prov)
+            page_size = 6
+            start_idx = page * page_size
+            page_items = all_m[start_idx : start_idx + page_size]
+            toast = ""
+            if 0 <= idx < len(page_items):
+                target_mid = page_items[idx][0]
+                is_on = toggle_model_visibility(target_mid)
+                toast = f"✅ {target_mid} включена" if is_on else f"❌ {target_mid} скрыта"
+            rep = _render_models_config_card(prov, page)
+            return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+        if action == "del":
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            from src.models_config import get_all_provider_models, remove_custom_model
+            all_m = get_all_provider_models(prov)
+            page_size = 6
+            start_idx = page * page_size
+            page_items = all_m[start_idx : start_idx + page_size]
+            toast = ""
+            if 0 <= idx < len(page_items):
+                target_mid = page_items[idx][0]
+                rem = remove_custom_model(prov, target_mid)
+                toast = f"🗑 Модель {target_mid} удалена" if rem else "Не удалось удалить"
+            rep = _render_models_config_card(prov, page)
+            return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=toast)
+
+        if action == "rst":
+            from src.models_config import reset_models_config
+            reset_models_config(prov)
+            rep = _render_models_config_card(prov, 0)
+            return BridgeReply(text=rep.text, keyboard=rep.keyboard, toast=f"Раздел {prov.upper()} сброшен")
+
+        if action == "add":
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            set_waiting_model_add(cq.chat_id, tid, {"provider": prov, "page": page})
+            short_prov = {"agy": "Google Antigravity", "codex": "OpenAI Codex", "openai": "OpenAI API"}.get(prov, prov.upper())
+            lines = [
+                f"➕ <b>Добавление модели ({short_prov})</b>\n",
+                "Отправьте идентификатор модели сообщением в чат.",
+                "• Пример ID: <code>gpt-4.5-preview</code> или <code>deepseek-reasoner</code>",
+                "• Можно также указать название: <code>gpt-4.5-preview GPT-4.5 Preview</code>\n",
+                "👇 <i>Отправьте сообщение или нажмите кнопку отмены:</i>",
+            ]
+            keyboard = [[{"text": "❌ Отмена", "callback_data": f"mcfg:view:{prov}:{page}"}]]
+            return BridgeReply(text="\n".join(lines), keyboard=keyboard, toast="Жду имя модели в чат")
     if data == "nav:mode":
         return _render_mode_picker(cs, cfg)
     if data == "nav:voice":
